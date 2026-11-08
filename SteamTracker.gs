@@ -1,26 +1,3 @@
-/**
- * Steam Tracker for Google Sheets
- * Updates playtime + achievement progress, ONLY for games listed on your sheet,
- * and posts your last played game to Discord.
- *
- * Sheet layout (your GAMES TO PLAT sheet): row 1 = headers, game names under "GAME LIST".
- * The script fills in these columns by header name:
- *   APPID | COLLECTED ACHIES | TOTAL ACHIES | HOURS PLAYED | LAST PLAYED | LAST UPDATED
- * It never touches AMOUNT DONE / COMPLETED (your formulas) or the lists in the other columns
- * (WHO TO BLAME, GAMES TO BUY, WHEEL OF GAMES).
- * A STATUS column is added in the empty column right after LAST UPDATED (skipped if it isn't empty).
- * An optional GENRE column is filled automatically if you add a column with that header.
- * New game rows get the AMOUNT DONE / PROGRESS / COMPLETED formulas copied down automatically.
- * On a completely blank sheet, the headers, formulas, colours and totals row are created for you.
- * Game names become links to their Steam store pages (Settings > Link game names).
- * A row whose game name is just "TOTAL(S)", "OVERALL" or "SUMMARY" ends the game list.
- * If you already know a game's AppID, type it in and it will be used instead of name matching.
- *
- * Speed: Steam is queried in parallel, and a game's achievements are only re-fetched
- * when its playtime/last-played changed (or it was played in the last few hours).
- * Family-shared games are always re-fetched because Steam gives no playtime for them.
- */
-
 // ---------- Settings ----------
 // Everything below can be changed from the menu: Steam Tracker > Settings. These are only the defaults.
 const DEFAULTS = {
