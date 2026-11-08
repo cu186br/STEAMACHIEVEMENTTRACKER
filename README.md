@@ -161,7 +161,3 @@ Google Apps Script has daily quotas. A normal list updates well within them, but
 ## Updating
 
 Replace the code in **Extensions → Apps Script** with the newer `SteamTracker.gs`, save, and reload the sheet. Your settings and saved details are kept.
-
-## License
-
-Add the license of your choice here, for example MIT.
