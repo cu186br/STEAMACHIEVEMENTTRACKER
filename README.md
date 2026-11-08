@@ -24,6 +24,7 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 
 - A Google account and a Google Sheet.
 - A Steam account whose **Profile** and **Game details** are set to **Public**.
+- YOU NEED STEAM GUARD AUTH SETUP FOR THE STEAM API WEB KEY
 - A free Steam Web API key (see step 1 below). Steam only issues keys to accounts that are not "limited" (an account that has spent at least $5 on Steam).
 - Optional: a Discord server where you can create a webhook.
 
