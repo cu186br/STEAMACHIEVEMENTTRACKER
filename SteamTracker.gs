@@ -12,8 +12,20 @@ const DEFAULTS = {
   weeklyOn: true,        // Discord: weekly summary
   weeklyDay: 0,          // 0 = Sunday ... 6 = Saturday, in the sheet's time zone
   weeklyHour: 20,        // 0-23
-  autoOn: false          // remembers whether auto-update was turned on from the menu
+  autoOn: false,         // remembers whether auto-update was turned on from the menu
+  raOn: false,           // RetroAchievements on a second tab
+  raSheetName: 'RetroAchievements',
+  gameRows: 250,         // game rows created on a new blank sheet (use Add game rows to grow it later)
+  sortRange: '',         // columns the Sort options move, e.g. 'A:L'. Empty = automatic (GAME LIST through the last tracker column)
+  // Cell update rules: true = keep my edits (the script only fills blank cells), false = the script overwrites.
+  keep: { appid: false, console: true, genre: true, unlocked: false, hardcore: false, total: false,
+          hours: false, lastPlayed: false, updated: false }
 };
+const RULE_COLS = [
+  ['appid', 'APPID / GAME ID'], ['console', 'CONSOLE'], ['genre', 'GENRE'], ['unlocked', 'COLLECTED ACHIES'],
+  ['hardcore', 'HARDCORE ACHIES'], ['total', 'TOTAL ACHIES'], ['hours', 'HOURS PLAYED'],
+  ['lastPlayed', 'LAST PLAYED'], ['updated', 'LAST UPDATED']
+];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 // Fixed behaviour (not shown in the menu).
@@ -25,7 +37,6 @@ const GENRE_TIME_BUDGET_SEC = 200; // max time per run spent on genre lookups; t
 // Layout created on a blank sheet (and by Steam Tracker > Set up blank sheet).
 const LAYOUT = ['GAME LIST', 'GENRE', 'APPID', 'COLLECTED ACHIES', 'TOTAL ACHIES', 'AMOUNT DONE', 'PROGRESS',
   'COMPLETED', 'HOURS PLAYED', 'LAST PLAYED', 'LAST UPDATED', 'STATUS'];
-const LAST_GAME_ROW = 256;   // formulas are filled down to here; the totals row sits right below it
 
 // Header names on your sheet (case-insensitive). Change these if you rename a column.
 const NAME_HEADERS = ['game list', 'game', 'name', 'title', 'game name'];
@@ -43,7 +54,9 @@ const OUT_COLS = {
 function cfg_() {
   try {
     const raw = PropertiesService.getScriptProperties().getProperty('SETTINGS');
-    return Object.assign({}, DEFAULTS, raw ? JSON.parse(raw) : {});
+    const c = Object.assign({}, DEFAULTS, raw ? JSON.parse(raw) : {});
+    c.keep = Object.assign({}, DEFAULTS.keep, c.keep || {});
+    return c;
   } catch (e) {
     return Object.assign({}, DEFAULTS);
   }
@@ -70,6 +83,23 @@ function buildMenu_() {
   const ui = SpreadsheetApp.getUi();
   const c = cfg_();
   const onOff = b => (b ? 'ON' : 'OFF');
+
+  const sortMenu = ui.createMenu('Sort the list')
+    .addItem('A → Z (name)', 'sortAZ')
+    .addItem('Z → A (name)', 'sortZA')
+    .addItem('Completion % (highest first)', 'sortPctHigh')
+    .addItem('Completion % (lowest first)', 'sortPctLow')
+    .addItem('Hours played (most first)', 'sortHours')
+    .addItem('Last played (newest first)', 'sortRecent')
+    .addItem('Genre (A → Z)', 'sortGenre')
+    .addSeparator()
+    .addItem('Sort range: ' + (c.sortRange || 'automatic') + ' (change)', 'settingSortRange');
+
+  const rules = ui.createMenu('Cell update rules');
+  RULE_COLS.forEach(r => {
+    rules.addItem(r[1] + ': ' + (c.keep[r[0]] ? 'KEEP my edits' : 'script overwrites'), 'rule_' + r[0]);
+  });
+
   const settings = ui.createMenu('Settings')
     .addItem('Set API key & Steam ID', 'setupCredentials')
     .addItem('Set Discord webhook', 'setupDiscord')
@@ -77,10 +107,19 @@ function buildMenu_() {
     .addItem('Auto-update: ' + (autoUpdateOn_() ? 'ON (click to turn off)' : 'OFF (click to turn on)'), 'toggleAutoUpdate')
     .addItem('Auto-update every ' + c.autoMinutes + ' min (change)', 'settingAutoMinutes')
     .addSeparator()
-    .addItem('Sheet tab: ' + c.sheetName + ' (change)', 'settingSheetName')
-    .addItem('Link game names: ' + onOff(c.linkNames), 'toggleLinkNames')
+    .addItem('Add game rows…', 'addGameRows')
+    .addSubMenu(sortMenu)
+    .addSubMenu(rules)
+    .addItem('Game rows on a new sheet: ' + c.gameRows + ' (change)', 'settingGameRows')
+    .addSeparator()
+    .addItem('Set RetroAchievements username & key', 'setupRetro')
+    .addItem('RetroAchievements: ' + onOff(c.raOn), 'toggleRetro')
+    .addItem('RetroAchievements tab: ' + c.raSheetName + ' (change)', 'settingRaSheetName')
+    .addSeparator()
+    .addItem('Steam tab: ' + c.sheetName + ' (change)', 'settingSheetName')
+    .addItem('Link game names (Steam): ' + onOff(c.linkNames), 'toggleLinkNames')
     .addItem('Genre column: ' + onOff(c.genreColumn), 'toggleGenre')
-    .addItem('Status column: ' + onOff(c.statusColumn), 'toggleStatus')
+    .addItem('Status column (Steam): ' + onOff(c.statusColumn), 'toggleStatus')
     .addItem('Re-check games played in last ' + c.recentHours + ' h (change)', 'settingRecentHours')
     .addSeparator()
     .addItem('Discord last-played posts: ' + onOff(c.postLastPlayed), 'toggleLastPlayed')
@@ -97,8 +136,29 @@ function buildMenu_() {
     .addSeparator()
     .addItem('Diagnose selected game', 'diagnoseGame')
     .addItem('Set up blank sheet', 'setupSheet')
+    .addItem('Set up RetroAchievements tab', 'setupRetroSheet')
     .addSubMenu(settings)
     .addToUi();
+}
+
+function toggleRetro() {
+  const props = PropertiesService.getScriptProperties();
+  if (!cfg_().raOn && !(props.getProperty('RA_USER') && props.getProperty('RA_KEY'))) {
+    alert_('Set your RetroAchievements username & key first.');
+    return;
+  }
+  toggle_('raOn', 'RetroAchievements');
+}
+
+function settingRaSheetName() {
+  const v = ask_('RetroAchievements tab', 'Name for the RetroAchievements tab (currently "' + cfg_().raSheetName +
+    '"). If it doesn\'t exist yet it is created on the next update.');
+  if (v === null || v === '') return;
+  if (v === cfg_().sheetName) { alert_('That is the Steam tab. Pick a different name. Nothing was changed.'); return; }
+  if (/[\[\]*?:\/\\]/.test(v) || v.length > 99) { alert_('Tab names can\'t contain [ ] * ? : / \\ . Nothing was changed.'); return; }
+  setCfg_({ raSheetName: v });
+  buildMenu_();
+  alert_('The RetroAchievements tab is now "' + v + '".');
 }
 
 function toggle_(key, label) {
@@ -177,7 +237,12 @@ function showSettings() {
   const c = cfg_();
   const onOff = b => (b ? 'ON' : 'OFF');
   alert_([
-    'Sheet tab: ' + c.sheetName,
+    'Steam tab: ' + c.sheetName,
+    'RetroAchievements: ' + onOff(c.raOn) + ' (tab "' + c.raSheetName + '", ' +
+      (PropertiesService.getScriptProperties().getProperty('RA_KEY') ? 'key saved' : 'key NOT set') + ')',
+    'Sort range: ' + (c.sortRange || 'automatic') + '   Game rows on a new sheet: ' + c.gameRows,
+    'Cells the script overwrites: ' + (RULE_COLS.filter(r => !c.keep[r[0]]).map(r => r[1]).join(', ') || 'none') +
+      '\nCells where your edits are kept: ' + (RULE_COLS.filter(r => c.keep[r[0]]).map(r => r[1]).join(', ') || 'none'),
     'Auto-update: ' + (autoUpdateOn_() ? 'ON, every ' + c.autoMinutes + ' min' : 'OFF (would run every ' + c.autoMinutes + ' min)'),
     'Re-check games played in last ' + c.recentHours + ' h',
     'Link game names: ' + onOff(c.linkNames),
@@ -223,13 +288,37 @@ function updateSteamSheet() { run_(false, false); }
 function updateAndPostNow() { run_(true, false); }
 function postWeeklyNow() { run_(false, true); }
 
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) { alert_('Another Steam Tracker task is running. Try again in a moment.'); return; }
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+// Updates the Steam tab, then the RetroAchievements tab (if turned on), then sends the Discord posts.
 function run_(force, weeklyNow) {
+  withLock_(() => {
+    const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    const errors = [];
+    let tracked = [];
+    try { tracked = tracked.concat(updateSteam_(force) || []); } catch (e) { errors.push(e); }
+    if (cfg_().raOn) {
+      try { tracked = tracked.concat(updateRetro_(force) || []); } catch (e) { errors.push(e); }
+    }
+    if (errors.length) throw errors[0];
+    // A game listed twice on a sheet is only counted once in Discord posts.
+    const seenKeys = {};
+    tracked = tracked.filter(t => { const k = (t.src || 'steam') + ':' + t.appid; if (seenKeys[k]) return false; seenKeys[k] = true; return true; });
+    notifyDiscord_(tracked, force, weeklyNow, tz);
+  });
+}
+
+function updateSteam_(force) {
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('STEAM_API_KEY');
   let steamId = props.getProperty('STEAM_ID');
   if (!key || !steamId) {
-    alert_('Run Steam Tracker > Set API key & Steam ID first.');
-    return;
+    alert_('Run Steam Tracker > Settings > Set API key & Steam ID first.');
+    return [];
   }
   if (!/^\d{17}$/.test(steamId)) {
     steamId = resolveVanity_(key, steamId);
@@ -241,10 +330,10 @@ function run_(force, weeklyNow) {
   if (isBlankSheet_(sheet)) {
     setupLayout_(sheet);
     alert_('Blank sheet set up. Type your game names under GAME LIST, then run Steam Tracker > Update now.');
-    return;
+    return [];
   }
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) return [];
   const tz = ss.getSpreadsheetTimeZone();
 
   // --- Find columns by header (nothing is created except the optional status column) ---
@@ -285,7 +374,7 @@ function run_(force, weeklyNow) {
   const endIdx = nameCol.findIndex(r => /^(totals?|overall|summary)$/i.test(String(r[0]).trim()));
   if (endIdx !== -1) numRows = endIdx;
   while (numRows > 0 && String(nameCol[numRows - 1][0]).trim() === '') numRows--;
-  if (numRows === 0) return;
+  if (numRows === 0) return [];
 
   // Copy the AMOUNT DONE / PROGRESS / COMPLETED formulas down to any game row that is missing them.
   fillFormulas_(sheet, headers, nameIdx, col, numRows);
@@ -321,6 +410,8 @@ function run_(force, weeklyNow) {
     ((JSON.parse(recentRes.getContentText()).response || {}).games || []).forEach(g => { recent[g.appid] = g; });
   }
 
+  const keepRules = cfg_().keep;
+  const lastAch = loadJson_(props, 'LAST_ACH') || {}; // appid -> [unlocked, total] as last written by the script
   const freeMap = JSON.parse(props.getProperty('FREE_MAP') || '{}');
   let freeMapChanged = false;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -338,7 +429,8 @@ function run_(force, weeklyNow) {
     let note = '';
     const existingId = Number(cell(row, col.appid));
     if (existingId && byId[existingId]) game = byId[existingId];
-    if (!game) game = byName[norm_(title)];
+    // If you chose to keep your own APPIDs, a typed AppID is trusted over name matching.
+    if (!game && !(keepRules.appid && existingId)) game = byName[norm_(title)];
 
     if (!game) {
       // Not in your own library: free-to-play or Family Sharing. Find the AppID via the store.
@@ -373,10 +465,14 @@ function run_(force, weeklyNow) {
     const lastFetch = cell(row, col.updated);
     const stale = !(lastFetch instanceof Date) || (nowSec * 1000 - lastFetch.getTime()) > STALE_HOURS * 3600 * 1000;
     const failedBefore = /^Steam (error|says)/.test(statusText); // a failed fetch is retried on the next run
-    const need = force || shared || !hasData || note !== '' || stale || failedBefore ||
-      existingId !== game.appid ||
-      hoursNow !== cell(row, col.hours) ||
-      gDay !== day(cell(row, col.lastPlayed)) ||
+    // A number you changed by hand (and haven't told the script to keep) is put back to Steam's value.
+    const la = lastAch[game.appid];
+    const edited = !!la && ((!keepRules.unlocked && cell(row, col.unlocked) !== la[0]) ||
+                            (!keepRules.total && cell(row, col.total) !== la[1]));
+    const need = force || shared || !hasData || note !== '' || stale || failedBefore || edited ||
+      (!keepRules.appid && existingId !== game.appid) ||
+      (!keepRules.hours && hoursNow !== cell(row, col.hours)) ||
+      (!keepRules.lastPlayed && gDay !== day(cell(row, col.lastPlayed))) ||
       playedRecently;
 
     items.push({ i: i, title: title, game: game, shared: shared, free: free, note: note,
@@ -428,11 +524,15 @@ function run_(force, weeklyNow) {
     });
   }
 
-  // --- Genres: fill blank GENRE cells from the Steam store, paced to respect its rate limit ---
+  // --- Genres: looked up once per game (cached), paced to respect the Steam store's rate limit ---
+  const genreCache = loadJson_(props, 'GENRE_CACHE') || {};
   const genreOf = {};
   let genresLeft = 0;
   if (col.genre >= 0) {
-    const need = items.filter(it => !it.missing && String(cell(data[it.i], col.genre)).trim() === '');
+    const gblank = it => String(cell(data[it.i], col.genre)).trim() === '';
+    // Only look up games that aren't cached yet and whose cell the script would actually write.
+    const need = items.filter(it => !it.missing && genreCache[it.game.appid] === undefined &&
+      (!keepRules.genre || gblank(it)));
     const started = Date.now();
     let s = 0;
     while (s < need.length && Date.now() - started < GENRE_TIME_BUDGET_SEC * 1000) {
@@ -445,13 +545,16 @@ function run_(force, weeklyNow) {
       batch.forEach((it, n) => {
         const code = resps[n].getResponseCode();
         if (code === 429 || code === 403) { limited = true; return; } // rate limited: retried below
-        genreOf[it.i] = parseGenre_(resps[n], it.game.appid);
+        const g = parseGenre_(resps[n], it.game.appid);
+        if (g) genreCache[it.game.appid] = g;
       });
       if (limited) { Utilities.sleep(30000); continue; } // rate limited: wait, then redo this batch
       s += 10;
       Utilities.sleep(3000);
     }
-    genresLeft = need.filter(it => !genreOf[it.i]).length;
+    items.forEach(it => { if (!it.missing && genreCache[it.game.appid]) genreOf[it.i] = genreCache[it.game.appid]; });
+    genresLeft = need.filter(it => !genreCache[it.game.appid]).length;
+    if (need.length) saveJson_(props, 'GENRE_CACHE', genreCache);
   }
 
   // --- Pass 3: fill the output columns ---
@@ -460,6 +563,14 @@ function run_(force, weeklyNow) {
     if (col[k] >= 0) out[k] = data.map(r => [cell(r, col[k])]);
   });
   const setStatus = (i, text) => { if (out.status) out.status[i] = [text]; };
+  // put(): write a value unless this column is set to "keep my edits" and the cell already has something in it.
+  const orig = {};
+  Object.keys(out).forEach(k => { orig[k] = out[k].map(x => [x[0]]); });
+  const put = (k, i, v) => {
+    if (!out[k]) return;
+    if (keepRules[k] && orig[k][i][0] !== '') return;
+    out[k][i] = [v];
+  };
   const now = new Date();
   const tracked = [];
 
@@ -470,11 +581,11 @@ function run_(force, weeklyNow) {
       return;
     }
     const game = it.game;
-    out.appid[i] = [game.appid];
-    if (it.hoursNow !== undefined) out.hours[i] = [it.hoursNow];
+    put('appid', i, game.appid);
+    if (it.hoursNow !== undefined) put('hours', i, it.hoursNow);
     else if (out.hours[i][0] === '') out.hours[i] = [0]; // no hours recorded (e.g. family share): show 0
-    if (game.rtime_last_played) out.lastPlayed[i] = [new Date(game.rtime_last_played * 1000)];
-    if (out.genre && genreOf[i]) out.genre[i] = [genreOf[i]];
+    if (game.rtime_last_played) put('lastPlayed', i, new Date(game.rtime_last_played * 1000));
+    if (genreOf[i]) put('genre', i, genreOf[i]);
 
     let ach = null;
     if (it.need) {
@@ -487,21 +598,23 @@ function run_(force, weeklyNow) {
         setStatus(i, 'Steam says your game details are private (check Privacy settings)' + tag);
       } else if (r.none === 'nostats') {
         setStatus(i, 'Steam has no stats for you in this game (numbers kept)' + tag);
-        out.updated[i] = [now];
+        put('updated', i, now);
       } else if (r.none) {
         // Steam says this game has no achievements: keep whatever numbers are already on your sheet.
         setStatus(i, 'No achievements on Steam' + tag);
-        out.updated[i] = [now];
+        put('updated', i, now);
       } else {
         ach = r;
-        out.unlocked[i] = [ach.unlocked];
-        out.total[i] = [ach.total];
+        put('unlocked', i, ach.unlocked);
+        put('total', i, ach.total);
         setStatus(i, (ach.total && ach.unlocked === ach.total ? '100% complete' : (ach.notStarted ? 'OK (not started)' : 'OK')) + tag);
-        out.updated[i] = [now];
+        put('updated', i, now);
       }
     }
 
+    lastAch[game.appid] = [out.unlocked[i][0], out.total[i][0]]; // what the script now considers "its" values
     tracked.push({
+      src: 'steam',
       title: it.title,
       appid: game.appid,
       hours: out.hours[i][0],
@@ -536,8 +649,9 @@ function run_(force, weeklyNow) {
   }
 
   if (freeMapChanged) props.setProperty('FREE_MAP', JSON.stringify(freeMap));
-  notifyDiscord_(tracked, force, weeklyNow, tz);
+  saveJson_(props, 'LAST_ACH', lastAch);
   if (genresLeft > 0) alert_(genresLeft + ' genres are still blank (Steam store rate limit). Run Update now again in a few minutes.');
+  return tracked;
 }
 
 // ---------- Discord ----------
@@ -587,6 +701,8 @@ function saveJson_(props, key, obj) {
 const isNum_ = v => typeof v === 'number' && !isNaN(v);
 const isComplete_ = t => isNum_(t.unlocked) && isNum_(t.total) && t.total > 0 && t.unlocked === t.total;
 const round1_ = n => Math.round(n * 10) / 10;
+const srcOf_ = t => t.src || 'steam';
+const SRC_NAME = { steam: 'Steam', ra: 'RetroAchievements' };
 
 /**
  * Discord posts, all based ONLY on the games listed on your sheet (never your whole library):
@@ -605,7 +721,8 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   const base = loadJson_(props, 'BASE') || {};   // appid -> unlocked as of the last post for that game
   const doneRaw = loadJson_(props, 'DONE');      // appid -> 1 for games already at 100%
   const done = doneRaw || {};
-  const gamesAt100 = () => tracked.filter(isComplete_).length;
+  // [games at 100%, games tracked] for one source ('steam' or 'ra')
+  const at100 = src => { const l = tracked.filter(t => srcOf_(t) === src); return [l.filter(isComplete_).length, l.length]; };
 
   // ----- 2. 100% completion -----
   const completed = [];
@@ -637,22 +754,25 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   else if (sessions.length) pick = byRecent(sessions);
 
   if (pick && (force || c.postLastPlayed)) {
-    const hoursTxt = isNum_(pick.hours) ? pick.hours + ' h' : 'n/a';
     const achTxt = isNum_(pick.unlocked) ? pick.unlocked + ' / ' + pick.total : 'No achievements';
     let newTxt = 'n/a';
     if (isNum_(pick.unlocked)) {
       const b = base[pick.appid];
       newTxt = isNum_(b) ? '+' + Math.max(0, pick.unlocked - b) : 'First check';
     }
+    const isRa = srcOf_(pick) === 'ra';
+    const fields = isRa
+      ? [{ name: 'Achievements', value: achTxt, inline: true },
+         { name: 'Hardcore', value: isNum_(pick.hardcore) ? pick.hardcore + ' / ' + pick.total : 'n/a', inline: true }]
+      : [{ name: 'Total hours', value: isNum_(pick.hours) ? pick.hours + ' h' : 'n/a', inline: true },
+         { name: 'Achievements', value: achTxt, inline: true }];
+    fields.push({ name: 'New since last post', value: newTxt, inline: true });
     const embed = {
       title: '🎮 Last played: ' + pick.title,
-      color: 0x1b2838,
-      fields: [
-        { name: 'Total hours', value: hoursTxt, inline: true },
-        { name: 'Achievements', value: achTxt, inline: true },
-        { name: 'New since last post', value: newTxt, inline: true }
-      ]
+      color: isRa ? 0xe8b400 : 0x1b2838,
+      fields: fields
     };
+    if (isRa) embed.footer = { text: 'RetroAchievements' };
     if (pick.lastTs > 0) embed.timestamp = new Date(pick.lastTs * 1000).toISOString();
     postDiscord_({ embeds: [embed] });
     if (isNum_(pick.unlocked)) base[pick.appid] = pick.unlocked;
@@ -660,18 +780,21 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
 
   // ----- 2. (continued) post the completions -----
   (c.postCompletion ? completed : []).forEach(t => {
-    postDiscord_({
-      embeds: [{
-        title: '🏆 100% complete: ' + t.title,
-        description: 'Every achievement unlocked!',
-        color: 0xf1c40f,
-        fields: [
-          { name: 'Achievements', value: t.unlocked + ' / ' + t.total, inline: true },
-          { name: 'Total hours', value: isNum_(t.hours) ? t.hours + ' h' : 'n/a', inline: true },
-          { name: 'Games at 100%', value: gamesAt100() + ' / ' + tracked.length, inline: true }
-        ]
-      }]
-    });
+    const ra = srcOf_(t) === 'ra';
+    const n = at100(srcOf_(t));
+    const fields = [{ name: 'Achievements', value: t.unlocked + ' / ' + t.total, inline: true }];
+    if (ra) fields.push({ name: 'Hardcore', value: isNum_(t.hardcore) ? t.hardcore + ' / ' + t.total : 'n/a', inline: true });
+    else fields.push({ name: 'Total hours', value: isNum_(t.hours) ? t.hours + ' h' : 'n/a', inline: true });
+    fields.push({ name: 'Games at 100%', value: n[0] + ' / ' + n[1], inline: true });
+    const embed = {
+      title: '🏆 100% complete: ' + t.title,
+      description: ra ? (t.hardcore === t.total ? 'Mastered in hardcore!' : 'Every achievement unlocked (softcore).')
+                      : 'Every achievement unlocked!',
+      color: 0xf1c40f,
+      fields: fields
+    };
+    if (ra) embed.footer = { text: 'RetroAchievements' };
+    postDiscord_({ embeds: [embed] });
     Utilities.sleep(500);
   });
 
@@ -700,11 +823,18 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
     });
     per.sort((x, y) => (y.dh - x.dh) || (y.da - x.da));
 
-    const played = per.filter(p => p.dh > 0).length;
+    const played = per.length; // games with playtime or new achievements
     const lines = per.slice(0, 5).map(p =>
       '• ' + p.title + ' — ' + (p.dh > 0 ? round1_(p.dh) + ' h' : '0 h') + (p.da > 0 ? ', +' + p.da + ' achievements' : ''));
-    const sum = k => tracked.reduce((n, t) => n + (isNum_(t[k]) ? t[k] : 0), 0);
-    const totAch = sum('total'), gotAch = sum('unlocked');
+    const sumOf = (src, k) => tracked.filter(t => srcOf_(t) === src)
+      .reduce((n, t) => n + (isNum_(t[k]) ? t[k] : 0), 0);
+    const overall = src => {
+      const tot = sumOf(src, 'total'), got = sumOf(src, 'unlocked');
+      const n = at100(src);
+      return got + ' / ' + tot + ' achievements (' + (tot ? Math.round(got / tot * 1000) / 10 : 0) + '%)\n' +
+        (src === 'steam' ? round1_(sumOf('steam', 'hours')) + ' h total • ' : '') +
+        n[0] + ' / ' + n[1] + ' games at 100%';
+    };
 
     const fields = [
       { name: 'Hours played', value: round1_(hours) + ' h', inline: true },
@@ -713,10 +843,8 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
     ];
     if (lines.length) fields.push({ name: 'Top games', value: lines.join('\n').slice(0, 1000) });
     if (finished.length) fields.push({ name: '🏆 Completed this week', value: finished.join(', ').slice(0, 1000) });
-    fields.push({
-      name: 'Your sheet overall',
-      value: gotAch + ' / ' + totAch + ' achievements (' + (totAch ? Math.round(gotAch / totAch * 1000) / 10 : 0) + '%)\n' +
-        round1_(sum('hours')) + ' h total • ' + gamesAt100() + ' / ' + tracked.length + ' games at 100%'
+    ['steam', 'ra'].forEach(src => {
+      if (tracked.some(t => srcOf_(t) === src)) fields.push({ name: SRC_NAME[src] + ' overall', value: overall(src) });
     });
 
     postDiscord_({
@@ -731,7 +859,7 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   }
 
   // ----- Save state for the next run -----
-  const newSeen = {};
+  const newSeen = Object.assign({}, seen); // keep history of games not in this run (e.g. one source failed)
   tracked.forEach(t => {
     newSeen[t.appid] = [t.hours, t.unlocked, t.total];
     if (!isNum_(base[t.appid]) && isNum_(t.unlocked)) base[t.appid] = t.unlocked;
@@ -761,6 +889,8 @@ function postDiscord_(payload) {
 
 // Click any cell in a game's row, then run this to see exactly what Steam says about that game.
 function diagnoseGame() {
+  const activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  if (activeSheet.getName() === cfg_().raSheetName) { diagnoseRetro_(activeSheet); return; }
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('STEAM_API_KEY');
   let steamId = props.getProperty('STEAM_ID');
@@ -886,24 +1016,27 @@ function colLetter_(idx) { // 0 -> A
   return s;
 }
 
-function setupLayout_(sheet) {
-  const totalsRow = LAST_GAME_ROW + 1;
-  const n = LAYOUT.length;
+function setupLayout_(sheet, layout) {
+  layout = layout || LAYOUT;
+  const lastGameRow = 1 + Math.max(1, Number(cfg_().gameRows) || 250);   // formulas run down to here
+  const totalsRow = lastGameRow + 1;                                     // totals sit right below
+  const n = layout.length;
   if (sheet.getMaxRows() < totalsRow) sheet.insertRowsAfter(sheet.getMaxRows(), totalsRow - sheet.getMaxRows());
   if (sheet.getMaxColumns() < n) sheet.insertColumnsAfter(sheet.getMaxColumns(), n - sheet.getMaxColumns());
 
   const L = {};                                   // header -> column letter
-  LAYOUT.forEach((h, i) => { L[h] = colLetter_(i); });
-  const at = h => LAYOUT.indexOf(h) + 1;          // header -> 1-based column number
+  layout.forEach((h, i) => { L[h] = colLetter_(i); });
+  const at = h => layout.indexOf(h) + 1;          // header -> 1-based column number
+  const has = h => at(h) > 0;
 
   // Headers
-  sheet.getRange(1, 1, 1, n).setValues([LAYOUT])
+  sheet.getRange(1, 1, 1, n).setValues([layout])
     .setFontWeight('bold').setBackground('#1b2838').setFontColor('#ffffff');
   sheet.setFrozenRows(1);
 
   // Formulas for AMOUNT DONE, PROGRESS and COMPLETED, filled down for future games
   const rows = [];
-  for (let r = 2; r <= LAST_GAME_ROW; r++) {
+  for (let r = 2; r <= lastGameRow; r++) {
     const done = L['AMOUNT DONE'] + r;
     rows.push([
       '=IFERROR(IF(OR(' + L['COLLECTED ACHIES'] + r + '="",' + L['TOTAL ACHIES'] + r + '=""),"",' +
@@ -916,7 +1049,7 @@ function setupLayout_(sheet) {
 
   // Number formats
   sheet.getRange(2, at('AMOUNT DONE'), rows.length, 1).setNumberFormat('0.00%');
-  sheet.getRange(2, at('HOURS PLAYED'), rows.length, 1).setNumberFormat('0.0');
+  if (has('HOURS PLAYED')) sheet.getRange(2, at('HOURS PLAYED'), rows.length, 1).setNumberFormat('0.0');
   sheet.getRange(2, at('LAST PLAYED'), rows.length, 1).setNumberFormat('yyyy-mm-dd');
   sheet.getRange(2, at('LAST UPDATED'), rows.length, 1).setNumberFormat('yyyy-mm-dd hh:mm');
 
@@ -929,8 +1062,9 @@ function setupLayout_(sheet) {
 
   // Totals row
   const tr = totalsRow;
-  const sum = h => '=SUM(' + L[h] + '2:' + L[h] + LAST_GAME_ROW + ')';
+  const sum = h => '=SUM(' + L[h] + '2:' + L[h] + lastGameRow + ')';
   sheet.getRange(tr, at('COLLECTED ACHIES')).setFormula(sum('COLLECTED ACHIES'));
+  if (has('HARDCORE ACHIES')) sheet.getRange(tr, at('HARDCORE ACHIES')).setFormula(sum('HARDCORE ACHIES'));
   sheet.getRange(tr, at('TOTAL ACHIES')).setFormula(sum('TOTAL ACHIES'));
   sheet.getRange(tr, at('AMOUNT DONE')).setFormula(
     '=IFERROR(' + L['COLLECTED ACHIES'] + tr + '/' + L['TOTAL ACHIES'] + tr + ',"")').setNumberFormat('0.0%');
@@ -938,12 +1072,586 @@ function setupLayout_(sheet) {
     '=IF(' + L['AMOUNT DONE'] + tr + '="","",SPARKLINE(MIN(' + L['AMOUNT DONE'] + tr + ',1),' +
     '{"charttype","bar";"max",1;"color1","#34a853"}))');
   sheet.getRange(tr, at('COMPLETED')).setFormula(
-    '=COUNTIF(' + L['COMPLETED'] + '2:' + L['COMPLETED'] + LAST_GAME_ROW + ',"✓") & " / " & COUNTA(' +
-    L['GAME LIST'] + '2:' + L['GAME LIST'] + LAST_GAME_ROW + ')');
-  sheet.getRange(tr, at('HOURS PLAYED')).setFormula(sum('HOURS PLAYED')).setNumberFormat('#,##0.0" hrs"');
+    '=COUNTIF(' + L['COMPLETED'] + '2:' + L['COMPLETED'] + lastGameRow + ',"✓") & " / " & COUNTA(' +
+    L['GAME LIST'] + '2:' + L['GAME LIST'] + lastGameRow + ')');
+  if (has('HOURS PLAYED')) sheet.getRange(tr, at('HOURS PLAYED')).setFormula(sum('HOURS PLAYED')).setNumberFormat('#,##0.0" hrs"');
   sheet.getRange(tr, 1, 1, n).setFontWeight('bold');
 
   sheet.setColumnWidth(1, 260);
+}
+
+// ---------- shared sheet helpers ----------
+
+// Header names that belong to the game table (used to work out which columns the Sort / Add rows tools move).
+const TABLE_HEADERS = ['game list', 'game', 'name', 'title', 'game name', 'genre', 'appid', 'game id', 'console',
+  'collected achies', 'hardcore achies', 'total achies', 'amount done', 'progress', 'completed', 'hours played',
+  'last played', 'last updated', 'status'];
+
+function headersOf_(sheet) {
+  const n = sheet.getLastColumn();
+  return n < 1 ? [] : sheet.getRange(1, 1, 1, n).getValues()[0].map(h => String(h).trim().toLowerCase().replace(/\s+/g, ' '));
+}
+
+// Number of game rows: ends at the last filled name, or at a "TOTALS"-style label row.
+function trimGameRows_(sheet, nameIdx) {
+  const nameCol = sheet.getRange(2, nameIdx + 1, Math.max(sheet.getLastRow() - 1, 1), 1).getValues();
+  let n = nameCol.length;
+  const end = nameCol.findIndex(r => /^(totals?|overall|summary)$/i.test(String(r[0]).trim()));
+  if (end !== -1) n = end;
+  while (n > 0 && String(nameCol[n - 1][0]).trim() === '') n--;
+  return n;
+}
+
+function colIndex_(letters) { // 'A' -> 0
+  return letters.toUpperCase().split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+}
+
+// First and last (0-based) column of the game table: your custom Sort range, or automatic.
+function tableSpan_(headers) {
+  const custom = cfg_().sortRange;
+  const m = custom && /^([A-Za-z]{1,2}):([A-Za-z]{1,2})$/.exec(custom);
+  if (m) return { min: Math.min(colIndex_(m[1]), colIndex_(m[2])), max: Math.max(colIndex_(m[1]), colIndex_(m[2])) };
+  const idx = TABLE_HEADERS.map(h => headers.indexOf(h)).filter(i => i >= 0);
+  return idx.length ? { min: Math.min.apply(null, idx), max: Math.max.apply(null, idx) } : null;
+}
+
+// The tab the Sort / Add rows tools act on: the tab you're looking at if it's one of ours, else the Steam tab.
+function targetSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const c = cfg_();
+  const active = ss.getActiveSheet();
+  if (active && (active.getName() === c.sheetName || active.getName() === c.raSheetName)) return active;
+  return ss.getSheetByName(c.sheetName) || ss.getSheets()[0];
+}
+
+// ---------- sorting ----------
+// Sorts only the game rows and only the table columns, so your other lists, the totals row and the empty
+// rows below the list are never moved. Rows keep their formulas, links and formatting.
+
+function sortAZ() { sortList_('az'); }
+function sortZA() { sortList_('za'); }
+function sortPctHigh() { sortList_('pctHigh'); }
+function sortPctLow() { sortList_('pctLow'); }
+function sortHours() { sortList_('hours'); }
+function sortRecent() { sortList_('recent'); }
+function sortGenre() { sortList_('genre'); }
+
+const SORT_LABELS = {
+  az: 'A → Z', za: 'Z → A', pctHigh: 'completion % (highest first)', pctLow: 'completion % (lowest first)',
+  hours: 'hours played (most first)', recent: 'last played (newest first)', genre: 'genre (A → Z)'
+};
+
+function sortList_(kind) {
+  withLock_(() => {
+    const sheet = targetSheet_();
+    const headers = headersOf_(sheet);
+    const H = h => headers.indexOf(h);
+    const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+    if (nameIdx === -1) { alert_('Could not find a GAME LIST column in row 1 of "' + sheet.getName() + '".'); return; }
+    const need = { pctHigh: ['collected achies', 'total achies'], pctLow: ['collected achies', 'total achies'],
+                   hours: ['hours played'], recent: ['last played'], genre: ['genre'] }[kind] || [];
+    const missing = need.filter(h => H(h) === -1);
+    if (missing.length) { alert_('"' + sheet.getName() + '" has no ' + missing[0].toUpperCase() + ' column, so it can\'t be sorted that way.'); return; }
+
+    const numRows = trimGameRows_(sheet, nameIdx);
+    if (numRows < 2) { alert_('There is nothing to sort yet.'); return; }
+    const span = tableSpan_(headers);
+    if (!span || nameIdx < span.min || nameIdx > span.max) { alert_('The sort range must include the GAME LIST column.'); return; }
+
+    const block = sheet.getRange(2, 1, numRows, sheet.getLastColumn()).getValues();
+    const num = v => (typeof v === 'number' && !isNaN(v)) ? v : null;
+    const cellOf = (r, h) => (H(h) >= 0 ? r[H(h)] : '');
+    const rows = block.map((r, i) => {
+      const unl = num(cellOf(r, 'collected achies')), tot = num(cellOf(r, 'total achies'));
+      const last = cellOf(r, 'last played');
+      return { i: i, name: String(r[nameIdx]).trim(), pct: unl !== null && tot ? unl / tot : null,
+               hours: num(cellOf(r, 'hours played')), last: last instanceof Date ? last.getTime() : null,
+               genre: String(cellOf(r, 'genre')).trim() };
+    });
+    const nameCmp = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    const byNum = (k, desc) => (a, b) => {
+      const x = a[k], y = b[k];
+      if (x === null && y === null) return nameCmp(a, b);
+      if (x === null) return 1;                       // rows with no value always go last
+      if (y === null) return -1;
+      return (desc ? y - x : x - y) || nameCmp(a, b);
+    };
+    const cmps = {
+      az: nameCmp, za: (a, b) => nameCmp(b, a),
+      pctHigh: byNum('pct', true), pctLow: byNum('pct', false), hours: byNum('hours', true), recent: byNum('last', true),
+      genre: (a, b) => (a.genre === '' ? (b.genre === '' ? nameCmp(a, b) : 1) : b.genre === '' ? -1 :
+        (a.genre.localeCompare(b.genre, undefined, { sensitivity: 'base' }) || nameCmp(a, b)))
+    };
+    const cmp = cmps[kind];
+    const ordered = rows.slice().sort((a, b) => (!a.name && b.name) ? 1 : (a.name && !b.name) ? -1 : cmp(a, b));
+    const rank = new Array(numRows);
+    ordered.forEach((r, pos) => { rank[r.i] = [pos + 1]; });
+
+    // A temporary key column right after the table carries the new order; then it is removed again.
+    sheet.insertColumnAfter(span.max + 1);
+    const helper = span.max + 2;
+    try {
+      sheet.getRange(2, helper, numRows, 1).setValues(rank);
+      sheet.getRange(2, span.min + 1, numRows, helper - span.min).sort({ column: helper, ascending: true });
+    } finally {
+      sheet.deleteColumn(helper);
+    }
+    alert_('Sorted "' + sheet.getName() + '" by ' + SORT_LABELS[kind] + '.');
+  });
+}
+
+function settingSortRange() {
+  const cur = cfg_().sortRange;
+  const v = ask_('Sort range', 'Columns the Sort options should move, e.g. A:L (from GAME LIST to the last column of your game table).\n' +
+    'Leave empty for automatic. Currently: ' + (cur || 'automatic'));
+  if (v === null) return;
+  if (v !== '' && !/^[A-Za-z]{1,2}:[A-Za-z]{1,2}$/.test(v)) { alert_('Please enter something like A:L. Nothing was changed.'); return; }
+  setCfg_({ sortRange: v.toUpperCase() });
+  buildMenu_();
+  alert_(v ? 'Sort range set to ' + v.toUpperCase() + '.' : 'Sort range is automatic again.');
+}
+
+// ---------- adding game rows ----------
+
+function addGameRows() {
+  const sheet = targetSheet_();
+  const v = ask_('Add game rows', 'How many game rows do you want to add to the "' + sheet.getName() + '" tab? (1-2000)');
+  if (v === null) return;
+  const n = Math.floor(Number(v));
+  if (!(n >= 1 && n <= 2000)) { alert_('Please enter a whole number from 1 to 2000. Nothing was changed.'); return; }
+  withLock_(() => alert_(extendRows_(sheet, n)));
+}
+
+// Makes room for n more games above the totals row (formulas, formats and totals ranges grow with it).
+function extendRows_(sheet, n) {
+  const headers = headersOf_(sheet);
+  const H = h => headers.indexOf(h);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) return 'Could not find a GAME LIST column in row 1 of "' + sheet.getName() + '".';
+  const span = tableSpan_(headers);
+  const lastRow = sheet.getLastRow();
+
+  // The totals row is the lowest row whose achievements column holds a =SUM(...).
+  let totalsRow = 0;
+  const sumIdx = ['collected achies', 'total achies', 'hardcore achies', 'hours played'].map(H).filter(i => i >= 0)[0];
+  if (sumIdx !== undefined && lastRow >= 3) {
+    const f = sheet.getRange(2, sumIdx + 1, lastRow - 1, 1).getFormulas();
+    for (let r = f.length - 1; r >= 0; r--) { if (/^=SUM\(/i.test(f[r][0])) { totalsRow = r + 2; break; } }
+  }
+
+  let first, src;
+  if (totalsRow >= 4) {
+    first = totalsRow - 1;                     // insert inside the totals' ranges so they grow too
+    src = totalsRow - 2;
+    sheet.insertRowsBefore(first, n);
+  } else {
+    first = Math.max(lastRow, 1) + 1;
+    src = Math.max(lastRow, 2);
+    sheet.insertRowsAfter(Math.max(lastRow, 1), n);
+  }
+
+  // Copy the formulas and formatting from the row above into the new rows.
+  ['amount done', 'progress', 'completed'].forEach(h => {
+    const idx = H(h);
+    if (idx === -1) return;
+    const f = sheet.getRange(src, idx + 1).getFormulaR1C1();
+    if (f) sheet.getRange(first, idx + 1, n, 1).setFormulaR1C1(f);
+  });
+  if (span) {
+    sheet.getRange(src, span.min + 1, 1, span.max - span.min + 1)
+      .copyTo(sheet.getRange(first, span.min + 1, n, span.max - span.min + 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  }
+
+  // Point every range in the totals row at the new last game row (this also fixes totals that stopped short).
+  let lastGame = first + n - 1;
+  if (totalsRow >= 4) {
+    const newTotals = totalsRow + n;
+    lastGame = newTotals - 1;
+    const width = sheet.getLastColumn();
+    const rng = sheet.getRange(newTotals, 1, 1, width);
+    const f = rng.getFormulas()[0];
+    const fixed = f.map(x => x ? x.replace(/\$?([A-Z]{1,3})\$?2:\$?([A-Z]{1,3})\$?\d+/g, (m, a, b) => a + '2:' + b + lastGame) : x);
+    if (fixed.some((x, i) => x !== f[i])) rng.setFormulas([fixed]);
+  }
+  return 'Added ' + n + ' rows to "' + sheet.getName() + '". Game rows now run from row 2 to row ' + lastGame + '.';
+}
+
+function settingGameRows() {
+  const v = ask_('Game rows on a new sheet', 'How many game rows should a new blank sheet get? (10-5000, currently ' + cfg_().gameRows + ').\n' +
+    'This only affects sheets the script sets up from scratch. Use "Add game rows" to grow an existing list.');
+  if (v === null) return;
+  const n = Math.floor(Number(v));
+  if (!(n >= 10 && n <= 5000)) { alert_('Please enter a number from 10 to 5000. Nothing was changed.'); return; }
+  setCfg_({ gameRows: n });
+  buildMenu_();
+  alert_('New blank sheets will get ' + n + ' game rows.');
+}
+
+// ---------- cell update rules ----------
+// For each column the script fills in, choose: KEEP my edits (the script only fills blank cells) or let the
+// script overwrite. STATUS is always managed by the script.
+
+function toggleRule_(key) {
+  const keep = Object.assign({}, cfg_().keep);
+  keep[key] = !keep[key];
+  setCfg_({ keep: keep });
+  buildMenu_();
+  const label = RULE_COLS.filter(r => r[0] === key)[0][1];
+  alert_(label + ': ' + (keep[key] ? 'the script now KEEPS what you type and only fills blank cells.' : 'the script now overwrites this column with fresh data.'));
+}
+function rule_appid() { toggleRule_('appid'); }
+function rule_console() { toggleRule_('console'); }
+function rule_genre() { toggleRule_('genre'); }
+function rule_unlocked() { toggleRule_('unlocked'); }
+function rule_hardcore() { toggleRule_('hardcore'); }
+function rule_total() { toggleRule_('total'); }
+function rule_hours() { toggleRule_('hours'); }
+function rule_lastPlayed() { toggleRule_('lastPlayed'); }
+function rule_updated() { toggleRule_('updated'); }
+
+// ---------- RetroAchievements ----------
+
+const RA_BASE = 'https://retroachievements.org/API/';
+const RA_LAYOUT = ['GAME LIST', 'CONSOLE', 'GENRE', 'COLLECTED ACHIES', 'HARDCORE ACHIES', 'TOTAL ACHIES', 'AMOUNT DONE',
+  'PROGRESS', 'COMPLETED', 'LAST PLAYED', 'LAST UPDATED'];
+const RA_NOTE = 'RetroAchievements: ';
+
+function normRa_(s) { return norm_(String(s).normalize('NFD').replace(/[̀-ͯ]/g, '')); }
+
+function raUrl_(endpoint, params) {
+  const props = PropertiesService.getScriptProperties();
+  const q = ['y=' + encodeURIComponent(props.getProperty('RA_KEY') || '')];
+  Object.keys(params || {}).forEach(k => q.push(k + '=' + encodeURIComponent(params[k])));
+  return RA_BASE + endpoint + '?' + q.join('&');
+}
+function raUser_() { return PropertiesService.getScriptProperties().getProperty('RA_USER') || ''; }
+
+function parseRaDate_(s) {
+  if (!s) return null;
+  const t = String(s);
+  const d = new Date(t.indexOf('T') !== -1 ? t : t.replace(' ', 'T') + 'Z'); // RetroAchievements times are UTC
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Every game in your RetroAchievements history, with achievement counts.
+function raFetchProgress_() {
+  const all = [];
+  for (let page = 0; page < 20; page++) {
+    const res = UrlFetchApp.fetch(raUrl_('API_GetUserCompletionProgress.php', { u: raUser_(), c: 500, o: all.length }),
+      { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      throw new Error('RetroAchievements error (HTTP ' + res.getResponseCode() + '). Check your username and Web API key in Settings.');
+    }
+    let j;
+    try { j = JSON.parse(res.getContentText()); } catch (e) { throw new Error('RetroAchievements sent an unreadable reply. Try again in a few minutes.'); }
+    const rs = j.Results || [];
+    rs.forEach(e => all.push(e));
+    if (!rs.length || all.length >= (j.Total || 0)) break;
+  }
+  return all;
+}
+
+// gameId -> Date of your most recent play (only for your 50 most recently played games).
+function raFetchRecent_() {
+  const out = {};
+  try {
+    const res = UrlFetchApp.fetch(raUrl_('API_GetUserRecentlyPlayedGames.php', { u: raUser_(), c: 50, o: 0 }), { muteHttpExceptions: true });
+    if (res.getResponseCode() === 200) {
+      JSON.parse(res.getContentText()).forEach(g => { const d = parseRaDate_(g.LastPlayed); if (d) out[g.GameID] = d; });
+    }
+  } catch (e) { /* optional */ }
+  return out;
+}
+
+// Per-game details (genre, and totals for a game that isn't in your history yet), paced gently.
+function raFetchInfo_(ids, budgetSec) {
+  const out = {};
+  const started = Date.now();
+  let s = 0;
+  while (s < ids.length && Date.now() - started < budgetSec * 1000) {
+    const batch = ids.slice(s, s + 5);
+    const resps = UrlFetchApp.fetchAll(batch.map(id => ({
+      url: raUrl_('API_GetGameInfoAndUserProgress.php', { g: id, u: raUser_() }), muteHttpExceptions: true
+    })));
+    let limited = false;
+    batch.forEach((id, n) => {
+      const code = resps[n].getResponseCode();
+      if (code === 429) { limited = true; return; }
+      if (code !== 200) { out[id] = null; return; }
+      try { out[id] = JSON.parse(resps[n].getContentText()); } catch (e) { out[id] = null; }
+    });
+    if (limited) { Utilities.sleep(20000); continue; }
+    s += 5;
+    Utilities.sleep(1000);
+  }
+  return out;
+}
+
+// Finds a sheet row's game in your RetroAchievements list: exact title, then a close title; CONSOLE narrows it down.
+function raMatch_(title, consoleTxt, byTitle, entries) {
+  const key = normRa_(title);
+  let cands = byTitle[key] || [];
+  let note = '';
+  if (!cands.length && key.length >= 5) {
+    cands = entries.filter(e => e._key.indexOf(key) !== -1 || (e._key.length >= 5 && key.indexOf(e._key) !== -1));
+    if (cands.length) note = 'matched "' + cands[0].Title + '", please verify';
+  }
+  if (cands.length > 1 && consoleTxt) {
+    const ck = normRa_(consoleTxt);
+    const f = cands.filter(e => { const c = normRa_(e.ConsoleName); return c === ck || c.indexOf(ck) !== -1 || ck.indexOf(c) !== -1; });
+    if (f.length) cands = f;
+  }
+  if (cands.length > 1) {
+    cands = cands.slice().sort((a, b) => (Number(b.NumAwarded) || 0) - (Number(a.NumAwarded) || 0));
+    const consoles = cands.slice(0, 4).map(e => e.ConsoleName).join(', ');
+    note = (note ? note + '; ' : '') + 'several matches (' + consoles + '), using ' + cands[0].ConsoleName + '. Fill in CONSOLE to choose';
+  }
+  return { entry: cands[0] || null, note: note };
+}
+
+function setupRetro() {
+  const u = ask_('RetroAchievements username', 'Your RetroAchievements username (the name on your profile):');
+  if (!u) return;
+  const k = ask_('RetroAchievements Web API key', 'On retroachievements.org: click your name > Settings > Keys > "Web API Key". Paste it here:');
+  if (!k) return;
+  const res = UrlFetchApp.fetch(RA_BASE + 'API_GetUserProfile.php?y=' + encodeURIComponent(k) + '&u=' + encodeURIComponent(u),
+    { muteHttpExceptions: true });
+  let ok = false;
+  try { ok = res.getResponseCode() === 200 && !!JSON.parse(res.getContentText()).User; } catch (e) { ok = false; }
+  if (!ok) {
+    alert_('RetroAchievements did not accept that username and key (HTTP ' + res.getResponseCode() + '). Nothing was saved.');
+    return;
+  }
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('RA_USER', u);
+  props.setProperty('RA_KEY', k);
+  setCfg_({ raOn: true });
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const name = cfg_().raSheetName;
+  let created = false;
+  if (!ss.getSheetByName(name)) { const sh = ss.insertSheet(name); setupLayout_(sh, RA_LAYOUT); created = true; }
+  buildMenu_();
+  alert_('Connected to RetroAchievements as ' + u + '. ' + (created ? 'The "' + name + '" tab was created. ' : '') +
+    'Type your retro games under GAME LIST on that tab, then run Update now.');
+}
+
+/**
+ * Menu: Set up RetroAchievements tab. Creates the tab if it is missing and builds the headers, formulas, colours and
+ * totals on it when it is blank. Never touches a tab that already has content. Works before or after connecting.
+ */
+function setupRetroSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const name = cfg_().raSheetName;
+  let sheet = ss.getSheetByName(name);
+  let created = false;
+  if (!sheet) { sheet = ss.insertSheet(name); created = true; }
+  if (!isBlankSheet_(sheet)) {
+    alert_('The "' + name + '" tab already has content, so nothing was changed. The layout is only created on a completely blank tab.');
+    return;
+  }
+  setupLayout_(sheet, RA_LAYOUT);
+  const props = PropertiesService.getScriptProperties();
+  const connected = !!(props.getProperty('RA_USER') && props.getProperty('RA_KEY'));
+  alert_((created ? 'The "' + name + '" tab was created and set up. ' : 'The "' + name + '" tab is set up. ') +
+    (connected ? 'Type your retro games under GAME LIST, then run Update now.'
+      : 'Next, run Settings > Set RetroAchievements username & key to connect your account, then type your games under GAME LIST.'));
+}
+
+function updateRetro_(force) {
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('RA_USER') || !props.getProperty('RA_KEY')) return [];
+  const c = cfg_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(c.raSheetName);
+  if (!sheet) sheet = ss.insertSheet(c.raSheetName);
+  if (isBlankSheet_(sheet)) {
+    setupLayout_(sheet, RA_LAYOUT);
+    alert_('The "' + c.raSheetName + '" tab is set up. Type your retro games under GAME LIST, then run Update now.');
+    return [];
+  }
+
+  const headers = headersOf_(sheet);
+  const H = h => headers.indexOf(h);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) throw new Error('Could not find a "GAME LIST" column in row 1 of the "' + c.raSheetName + '" tab.');
+  const col = { unlocked: H('collected achies'), total: H('total achies'), hardcore: H('hardcore achies'), console: H('console'),
+    genre: c.genreColumn ? H('genre') : -1, lastPlayed: H('last played'), updated: H('last updated'), appid: H('game id') };
+  if (col.unlocked === -1 || col.total === -1) {
+    throw new Error('The "' + c.raSheetName + '" tab needs COLLECTED ACHIES and TOTAL ACHIES columns.');
+  }
+  const numRows = trimGameRows_(sheet, nameIdx);
+  if (numRows === 0) return [];
+  fillFormulas_(sheet, headers, nameIdx, col, numRows);
+
+  const used = Object.keys(col).map(k => col[k]).filter(i => i >= 0).concat([nameIdx]);
+  const minC = Math.min.apply(null, used);
+  const maxC = Math.max.apply(null, used);
+  const data = sheet.getRange(2, minC + 1, numRows, maxC - minC + 1).getValues();
+  const cell = (row, idx) => row[idx - minC];
+  const keepRules = c.keep;
+
+  // --- Your RetroAchievements history ---
+  const entries = raFetchProgress_();
+  const byId = {};
+  const byTitle = {};
+  entries.forEach(e => {
+    e._key = normRa_(e.Title);
+    byId[e.GameID] = e;
+    (byTitle[e._key] = byTitle[e._key] || []).push(e);
+  });
+  const recent = raFetchRecent_();
+
+  // --- Match every row ---
+  const items = [];
+  data.forEach((row, i) => {
+    const title = String(cell(row, nameIdx)).trim();
+    if (!title) return;
+    const typedId = col.appid >= 0 ? Number(cell(row, col.appid)) : 0;
+    const consoleTxt = col.console >= 0 ? String(cell(row, col.console)).trim() : '';
+    let entry = typedId ? (byId[typedId] || null) : null;
+    let id = typedId || 0;
+    let note = '';
+    if (!entry && !(keepRules.appid && typedId)) {
+      const m = raMatch_(title, consoleTxt, byTitle, entries);
+      if (m.entry) { entry = m.entry; id = entry.GameID; }
+      note = m.note;
+    }
+    if (!entry && !id) { items.push({ i: i, title: title, missing: true }); return; }
+    items.push({ i: i, title: title, id: id, entry: entry, note: note });
+  });
+
+  // --- Details we still need: genres, and totals for a typed Game ID that isn't in your history ---
+  const genreCache = loadJson_(props, 'GENRE_CACHE') || {};
+  const gblank = it => String(cell(data[it.i], col.genre)).trim() === '';
+  const needInfo = items.filter(it => !it.missing && (!it.entry ||
+    (col.genre >= 0 && genreCache['ra' + it.id] === undefined && (!keepRules.genre || gblank(it)))));
+  const ids = [];
+  needInfo.forEach(it => { if (ids.indexOf(it.id) === -1) ids.push(it.id); });
+  const infos = ids.length ? raFetchInfo_(ids, 150) : {};
+  let cacheChanged = false;
+  ids.forEach(id => {
+    if (infos[id]) { genreCache['ra' + id] = String(infos[id].Genre || '').trim() || 'Unknown'; cacheChanged = true; }
+  });
+  if (cacheChanged) saveJson_(props, 'GENRE_CACHE', genreCache);
+
+  // --- Fill the output columns ---
+  const out = {};
+  ['appid', 'console', 'genre', 'unlocked', 'hardcore', 'total', 'lastPlayed', 'updated'].forEach(k => {
+    if (col[k] >= 0) out[k] = data.map(r => [cell(r, col[k])]);
+  });
+  const orig = {};
+  Object.keys(out).forEach(k => { orig[k] = out[k].map(x => [x[0]]); });
+  const put = (k, i, v) => {
+    if (!out[k]) return;
+    if (keepRules[k] && orig[k][i][0] !== '') return;
+    out[k][i] = [v];
+  };
+  const nameRange = sheet.getRange(2, nameIdx + 1, numRows, 1);
+  const notes = nameRange.getNotes();
+  const oldNotes = notes.map(n => n[0]);
+  // Problems are shown as a note on the game name (there is no STATUS column on this tab).
+  const setNote = (i, text) => {
+    if (text) notes[i][0] = RA_NOTE + text;
+    else if (String(oldNotes[i]).indexOf(RA_NOTE) === 0) notes[i][0] = '';
+  };
+  const now = new Date();
+  const tracked = [];
+
+  items.forEach(it => {
+    const i = it.i;
+    if (it.missing) {
+      setNote(i, 'no match in your RetroAchievements list. Check the spelling against retroachievements.org or fill in CONSOLE. ' +
+        '(A game you have never played may not appear yet.)');
+      return;
+    }
+    const e = it.entry;
+    const inf = infos[it.id];
+    let total, awarded, hc, consoleName, lastDate;
+    if (e) {
+      total = Number(e.MaxPossible) || 0;
+      awarded = Number(e.NumAwarded) || 0;
+      hc = Number(e.NumAwardedHardcore) || 0;
+      consoleName = e.ConsoleName;
+      lastDate = recent[e.GameID] || parseRaDate_(e.MostRecentAwardedDate);
+    } else if (inf) {
+      total = Number(inf.NumAchievements) || 0;
+      awarded = Number(inf.NumAwardedToUser) || 0;
+      hc = Number(inf.NumAwardedToUserHardcore) || 0;
+      consoleName = inf.ConsoleName;
+      let latest = null;
+      Object.keys(inf.Achievements || {}).forEach(k => {
+        const d = parseRaDate_(inf.Achievements[k].DateEarned);
+        if (d && (!latest || d > latest)) latest = d;
+      });
+      lastDate = recent[it.id] || latest;
+    } else {
+      setNote(i, 'could not read this game right now; it will retry on the next update.');
+      return;
+    }
+
+    put('appid', i, it.id);
+    put('console', i, consoleName);
+    if (genreCache['ra' + it.id]) put('genre', i, genreCache['ra' + it.id]);
+    if (lastDate) put('lastPlayed', i, lastDate);
+
+    if (total > 0) {
+      const changed = orig.unlocked[i][0] !== awarded || orig.total[i][0] !== total ||
+        (out.hardcore && orig.hardcore[i][0] !== hc) || (out.updated && orig.updated[i][0] === '');
+      put('unlocked', i, awarded);
+      put('total', i, total);
+      put('hardcore', i, hc);
+      if (changed) put('updated', i, now);
+      setNote(i, it.note);
+      tracked.push({
+        src: 'ra',
+        title: it.title + (consoleName ? ' [' + consoleName + ']' : ''),
+        appid: 'ra' + it.id,
+        unlocked: out.unlocked[i][0],
+        total: out.total[i][0],
+        hardcore: out.hardcore ? out.hardcore[i][0] : hc,
+        lastTs: lastDate ? Math.floor(lastDate.getTime() / 1000) : 0
+      });
+    } else {
+      setNote(i, 'this game has no achievements on RetroAchievements.');
+    }
+  });
+
+  // --- Write back (only our columns) ---
+  Object.keys(out).forEach(k => { sheet.getRange(2, col[k] + 1, numRows, 1).setValues(out[k]); });
+  if (col.lastPlayed >= 0) sheet.getRange(2, col.lastPlayed + 1, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  if (col.updated >= 0) sheet.getRange(2, col.updated + 1, numRows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
+  if (notes.some((n, i) => n[0] !== oldNotes[i])) nameRange.setNotes(notes);
+  return tracked;
+}
+
+// Shows how a row on the RetroAchievements tab is matched.
+function diagnoseRetro_(sheet) {
+  if (!raUser_()) { alert_('Set your RetroAchievements username & key first (Settings).'); return; }
+  const row = sheet.getActiveCell().getRow();
+  const headers = headersOf_(sheet);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (row < 2 || nameIdx === -1) { alert_('Click a cell in a game\'s row first (not the header row).'); return; }
+  const title = String(sheet.getRange(row, nameIdx + 1).getValue()).trim();
+  const ci = headers.indexOf('console');
+  const consoleTxt = ci >= 0 ? String(sheet.getRange(row, ci + 1).getValue()).trim() : '';
+  const entries = raFetchProgress_();
+  const byTitle = {};
+  entries.forEach(e => { e._key = normRa_(e.Title); (byTitle[e._key] = byTitle[e._key] || []).push(e); });
+  const m = raMatch_(title, consoleTxt, byTitle, entries);
+  const lines = ['Game: ' + title + (consoleTxt ? ' (' + consoleTxt + ')' : ''),
+                 'Your RetroAchievements history has ' + entries.length + ' games.'];
+  if (m.entry) {
+    const e = m.entry;
+    lines.push('Matched: ' + e.Title + ' [' + e.ConsoleName + '] (game ' + e.GameID + ')');
+    lines.push(e.NumAwarded + ' of ' + e.MaxPossible + ' achievements (' + e.NumAwardedHardcore + ' in hardcore)');
+    if (m.note) lines.push('Note: ' + m.note);
+  } else {
+    lines.push('No match. Check the spelling against retroachievements.org, or fill in CONSOLE.');
+    const k = normRa_(title).slice(0, 4);
+    const close = entries.filter(e => k && e._key.indexOf(k) === 0).slice(0, 5).map(e => e.Title + ' [' + e.ConsoleName + ']');
+    if (close.length) lines.push('Similar games in your history:\n  ' + close.join('\n  '));
+  }
+  alert_(lines.join('\n'));
 }
 
 // ---------- helpers ----------

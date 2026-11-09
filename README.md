@@ -18,13 +18,18 @@ No server, hosting or install is needed. Everything runs for free inside Google 
   - 🏆 100% completion.
   - 📅 A weekly summary, based only on the games on your sheet.
 - **Self-setting-up:** on a blank sheet it builds the headers, formulas, colours and totals row for you. New game rows get their formulas copied down automatically.
+- **Sorting:** sort the game list A to Z, Z to A, by completion %, hours, last played or genre from the menu. Only the game table is sorted, so your other lists and the totals row stay put.
+- **Add game rows:** type how many rows you want and the script extends the list, copies the formulas and fixes the totals.
+- **Cell update rules:** choose, column by column, whether the script overwrites a cell or keeps what you typed (STATUS is always managed by the script).
+- **RetroAchievements:** an optional second tab tracks your RetroAchievements games with the same columns (no store links, AppID or STATUS).
 - **Settings menu:** every option is in the menu, so there is no need to edit code.
 
 ## What you need
 
 - A Google account and a Google Sheet.
+- Optional: a free RetroAchievements account and its Web API key (see the RetroAchievements section).
 - A Steam account whose **Profile** and **Game details** are set to **Public**.
-- YOU NEED STEAM GUARD AUTH SETUP FOR THE STEAM API WEB KEY
+- STEAM GUARD AUTH IS REQUIRED FOR THE STEAM WEB API KEY!
 - A free Steam Web API key (see step 1 below). Steam only issues keys to accounts that are not "limited" (an account that has spent at least $5 on Steam).
 - Optional: a Discord server where you can create a webhook.
 
@@ -79,6 +84,42 @@ Run **Steam Tracker → Settings → Auto-update** to switch it on. It defaults 
 1. In Discord, go to **Server Settings → Integrations → Webhooks → New Webhook**, pick a channel, and **Copy Webhook URL**.
 2. In the sheet, run **Steam Tracker → Settings → Set Discord webhook** and paste it. A test message appears in the channel.
 
+## Sorting the list
+
+**Steam Tracker → Settings → Sort the list** offers: A to Z, Z to A, completion % (highest or lowest first), hours played, last played and genre. It only reorders the game table (the columns from `GAME LIST` to `STATUS`), so lists next to it and the totals row are never moved. Rows without data go last. 
+
+Use this instead of Google Sheets' own sort or filter, which reorders the whole sheet and breaks things.
+
+## Adding more game rows
+
+**Settings → Add game rows…** asks how many rows to add (1 to 2000). New rows go in above the totals row, formulas and formatting are copied down, and the totals ranges are extended. **Game rows on a new sheet** sets how many rows a blank sheet starts with (default 250).
+
+## Cell update rules
+
+**Settings → Cell update rules** toggles each column between **overwrite** and **keep my edits**. With keep on, the script only fills the cell when it is empty. Defaults: APPID, UNLOCKED, TOTAL, HOURS, LAST PLAYED and LAST UPDATED are overwritten; GENRE and CONSOLE are kept. Hand-edited achievement counts are re-checked against Steam when set to overwrite. STATUS cannot be configured.
+
+## RetroAchievements
+
+### Connect your RetroAchievements account
+
+1. Sign in at <https://retroachievements.org> (create a free account first if you don't have one).
+2. Click your username in the top right, open **Settings**, and scroll to the **Keys** section.
+3. Copy your **Web API Key**. Don't use the Connect key. It is the Web API key you need. Your **username** is the name shown on your profile.
+4. In your Google Sheet, run **Steam Tracker → Settings → Set RetroAchievements username & key**.
+5. Enter your username, then paste the key. The script checks them against RetroAchievements. If they are wrong it says so and saves nothing.
+6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers: GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, HARDCORE ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, LAST PLAYED, LAST UPDATED, and turns RetroAchievements on.
+7. Type game names under GAME LIST, then run **Update now**. If two games share a name, fill in CONSOLE (for example `SNES`) to pick the right one.
+
+### Set up the RetroAchievements tab
+
+Connecting your account creates the tab for you. You can also run **Steam Tracker → Set up RetroAchievements tab** at any time, before or after connecting. It creates the tab if it is missing (named after **Settings → RetroAchievements tab name**) and builds the headers, formulas, colours, progress bars and totals row. It only works on a blank tab, so it can't overwrite anything. The number of game rows comes from **Settings → Game rows on a new sheet**, and **Add game rows** can grow it later.
+
+Your RetroAchievements key is stored in the script's private Script Properties, not in the code. To switch accounts, run step 4 again. Turn the tracking off or on with **Settings → RetroAchievements on/off**, and rename the tab with **Settings → RetroAchievements tab name**.
+
+### What it does
+
+It carries over Discord posts (last played, 100% completion, which says *Mastered in hardcore* when it applies), the weekly summary, sorting, update rules and totals. It does not have store links, AppID or STATUS. Problems (not found, ambiguous or fuzzy match) appear as a note on the game name cell. Games you have never played may not be found, because they only appear in your RetroAchievements history once you've earned something.
+
 ## The menu
 
 | Item | What it does |
@@ -88,6 +129,7 @@ Run **Steam Tracker → Settings → Auto-update** to switch it on. It defaults 
 | **Post weekly summary now (preview)** | Posts the weekly summary right away without resetting the week. |
 | **Diagnose selected game** | Click any cell in a game's row, then run this. It shows exactly what Steam returns for that game. |
 | **Set up blank sheet** | Builds the layout. It only works on a completely empty tab, so it can't overwrite your data. |
+| **Set up RetroAchievements tab** | Creates and sets up the RetroAchievements tab the same way. |
 | **Settings** | The options below. |
 
 ### Settings
