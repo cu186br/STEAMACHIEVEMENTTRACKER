@@ -20,6 +20,7 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 - **Self-setting-up:** on a blank sheet it builds the headers, formulas, colours and totals row for you. New game rows get their formulas copied down automatically.
 - **Sorting:** sort the game list A to Z, Z to A, by completion %, hours, last played or genre from the menu. Only the game table is sorted, so your other lists and the totals row stay put.
 - **Add game rows:** type how many rows you want and the script extends the list, copies the formulas and fixes the totals.
+- **Backlog status:** an optional column (COMPLETED, IDLE, PLAYED, BACKLOG) the script fills in automatically as plain text, with a settable IDLE cutoff in months.
 - **Cell update rules:** choose, column by column, whether the script overwrites a cell or keeps what you typed (STATUS is always managed by the script).
 - **RetroAchievements:** an optional second tab tracks your RetroAchievements games with the same columns (no store links, AppID or STATUS).
 - **Settings menu:** every option is in the menu, so there is no need to edit code.
@@ -29,7 +30,6 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 - A Google account and a Google Sheet.
 - Optional: a free RetroAchievements account and its Web API key (see the RetroAchievements section).
 - A Steam account whose **Profile** and **Game details** are set to **Public**.
-- STEAM GUARD AUTH IS REQUIRED FOR THE STEAM WEB API KEY!
 - A free Steam Web API key (see step 1 below). Steam only issues keys to accounts that are not "limited" (an account that has spent at least $5 on Steam).
 - Optional: a Discord server where you can create a webhook.
 
@@ -84,9 +84,56 @@ Run **Steam Tracker → Settings → Auto-update** to switch it on. It defaults 
 1. In Discord, go to **Server Settings → Integrations → Webhooks → New Webhook**, pick a channel, and **Copy Webhook URL**.
 2. In the sheet, run **Steam Tracker → Settings → Set Discord webhook** and paste it. A test message appears in the channel.
 
+## Backlog status column
+
+Run **Steam Tracker → Add backlog status column** to add it to the tab you are looking at (Steam or RetroAchievements). It inserts a `BACKLOG STATUS` column directly left of GAME LIST and fills it. Everything to its right shifts over by one, and formulas, links and lists move with it. Running it again just refreshes the column. You can also add it by hand: make a column anywhere on the sheet with the header `BACKLOG STATUS` (`PLAY STATUS` or `BACKLOG` also work).
+
+On every update the script writes plain text into the column:
+
+| Status | When |
+|---|---|
+| **COMPLETED** | Every achievement is unlocked. |
+| **IDLE** | You have played it (hours or achievements) but not for the set number of months. |
+| **PLAYED** | You have played it more recently than that. |
+| **BACKLOG** | No hours and no achievements yet. |
+
+- **Settings → Mark IDLE after N months** sets the cutoff (default 6; 0 turns IDLE off).
+- **Settings → Cell update rules → BACKLOG STATUS** chooses between *script overwrites* (default) and *keep my edits*, where a status you type stays and the script only fills blank cells.
+- A cell that holds your own formula is never overwritten.
+- The script only writes the text. Dropdowns, chips and colours you add to the column yourself are left alone (see below). **Add game rows** copies them into the new rows.
+- Games with no recorded hours (Family Share, RetroAchievements) count as played once they have any achievements. A game with no last played date never becomes IDLE.
+- The column moves with its row when you sort.
+
+### Status colours (optional)
+
+**Settings → Backlog status colours** lets the script colour the status cells for you:
+
+- **Colour the status cells** turns it on or off (off by default).
+- Click **COMPLETED**, **PLAYED**, **IDLE** or **BACKLOG** to change that status's colour. Type a hex code such as `#b7e1cd`, a name (red, green, blue, yellow, orange, purple, pink, teal, grey, white), or `none` for no colour on that status.
+- **Reset to the default colours** puts them back.
+
+The colours are applied with conditional formatting, and the script manages only the four rules for the status column. When colours are on, any colour rules of your own for those four words in that column are replaced. Turning colours off removes the script's rules. Colours apply to both tabs if both have a status column.
+
+Google doesn't let a script change the colours of chip dropdowns, so choose one or the other: script colours here, or chips with colours you pick by hand (next section).
+
+### Turning the status into chips (optional)
+
+Google's coloured chip dropdowns can't be created by a script, but you can add them by hand in a minute. The script keeps writing the text, and the chip shows it with your colours.
+
+1. Click the first game cell in the BACKLOG STATUS column (for example `A2`). Press **Ctrl+Shift+Down** (**Cmd+Shift+Down** on a Mac) to select down to the last game row. Don't include the header or the totals row.
+2. Choose **Insert → Dropdown**. A side panel opens.
+3. Under criteria choose **Dropdown**, then add four items, spelled exactly as the script writes them, in capitals: `COMPLETED`, `IDLE`, `PLAYED`, `BACKLOG`.
+4. Click the coloured dot next to each item and pick a colour.
+5. Open **Advanced options**, set **If the data is invalid** to **Show a warning**, and set **Display style** to **Chip**.
+6. Click **Done**. The existing text turns into coloured chips.
+
+If you ever see a red triangle in a cell, the text doesn't match one of the four items exactly. The script updates the chips on every run, and you can also pick one by hand if **Cell update rules → BACKLOG STATUS** is set to keep my edits.
+
 ## Sorting the list
 
-**Steam Tracker → Settings → Sort the list** offers: A to Z, Z to A, completion % (highest or lowest first), hours played, last played and genre. It only reorders the game table (the columns from `GAME LIST` to `STATUS`), so lists next to it and the totals row are never moved. Rows without data go last. 
+**Steam Tracker → Settings → Sort the list** offers: A to Z, Z to A, completion % (highest or lowest first), hours played, last played, genre, and **Backlog status, then A to Z**. **Backlog status, then A → Z** groups the list by the BACKLOG STATUS column in the order BACKLOG, PLAYED, IDLE, COMPLETED, with each group sorted A to Z. Rows with no status go last. It needs the BACKLOG STATUS column (**Add backlog status column**).
+
+It only reorders the game table (the columns from `GAME LIST` to `STATUS`), so lists next to it and the totals row are never moved. Rows without data go last. Use Sort a custom range to limit it to columns you choose, for example `A:L`.
 
 Use this instead of Google Sheets' own sort or filter, which reorders the whole sheet and breaks things.
 
@@ -129,6 +176,7 @@ It carries over Discord posts (last played, 100% completion, which says *Mastere
 | **Post weekly summary now (preview)** | Posts the weekly summary right away without resetting the week. |
 | **Diagnose selected game** | Click any cell in a game's row, then run this. It shows exactly what Steam returns for that game. |
 | **Set up blank sheet** | Builds the layout. It only works on a completely empty tab, so it can't overwrite your data. |
+| **Add backlog status column** | Inserts the BACKLOG STATUS column on the current tab. |
 | **Set up RetroAchievements tab** | Creates and sets up the RetroAchievements tab the same way. |
 | **Settings** | The options below. |
 
@@ -161,7 +209,8 @@ Settings are saved with the script, so pasting in a newer version of the code do
 ## Discord posts
 
 - **Last played:** after a game's hours change, it posts the game, total hours, achievements, and the number gained since the last post for that game.
-- **100% complete:** a post when a game reaches every achievement. Games already at 100% when you first set it up are not announced.
+- **New achievements:** the post also lists each achievement you earned, with its name and description, as a list when there are several (up to 10 shown, then "…and N more"). It works for Steam and RetroAchievements. Achievements you earned before the script first saw the game are not listed, and hidden Steam achievements may have no description. If an update catches several games at once, each game's achievements are held and listed in that game's next post.
+- **100% complete:** a post when a game reaches every achievement, with the final achievements you earned listed. Games already at 100% when you first set it up are not announced.
 - **Weekly summary:** hours played, achievements gained, top games, anything completed that week, and your sheet-wide totals. It only counts the games on your sheet, and games you add mid-week count from the day you add them. It needs auto-update on.
 
 ## Troubleshooting
