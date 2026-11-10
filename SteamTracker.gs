@@ -15,16 +15,19 @@ const DEFAULTS = {
   autoOn: false,         // remembers whether auto-update was turned on from the menu
   raOn: false,           // RetroAchievements on a second tab
   raSheetName: 'RetroAchievements',
+  statusColours: false,  // BACKLOG STATUS column: colour the cells (conditional formatting managed by the script)
+  statusColourMap: { COMPLETED: '#b7e1cd', PLAYED: '#c9daf8', IDLE: '#fce8b2', BACKLOG: '#e6e6e6' },
+  idleMonths: 6,         // BACKLOG STATUS column: a played game not played for this many months becomes IDLE (0 = never)
   gameRows: 250,         // game rows created on a new blank sheet (use Add game rows to grow it later)
   sortRange: '',         // columns the Sort options move, e.g. 'A:L'. Empty = automatic (GAME LIST through the last tracker column)
   // Cell update rules: true = keep my edits (the script only fills blank cells), false = the script overwrites.
   keep: { appid: false, console: true, genre: true, unlocked: false, hardcore: false, total: false,
-          hours: false, lastPlayed: false, updated: false }
+          hours: false, lastPlayed: false, updated: false, playStatus: false }
 };
 const RULE_COLS = [
   ['appid', 'APPID / GAME ID'], ['console', 'CONSOLE'], ['genre', 'GENRE'], ['unlocked', 'COLLECTED ACHIES'],
   ['hardcore', 'HARDCORE ACHIES'], ['total', 'TOTAL ACHIES'], ['hours', 'HOURS PLAYED'],
-  ['lastPlayed', 'LAST PLAYED'], ['updated', 'LAST UPDATED']
+  ['lastPlayed', 'LAST PLAYED'], ['updated', 'LAST UPDATED'], ['playStatus', 'BACKLOG STATUS']
 ];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -56,6 +59,7 @@ function cfg_() {
     const raw = PropertiesService.getScriptProperties().getProperty('SETTINGS');
     const c = Object.assign({}, DEFAULTS, raw ? JSON.parse(raw) : {});
     c.keep = Object.assign({}, DEFAULTS.keep, c.keep || {});
+    c.statusColourMap = Object.assign({}, DEFAULTS.statusColourMap, c.statusColourMap || {});
     return c;
   } catch (e) {
     return Object.assign({}, DEFAULTS);
@@ -92,6 +96,7 @@ function buildMenu_() {
     .addItem('Hours played (most first)', 'sortHours')
     .addItem('Last played (newest first)', 'sortRecent')
     .addItem('Genre (A → Z)', 'sortGenre')
+    .addItem('Backlog status, then A → Z', 'sortBacklog')
     .addSeparator()
     .addItem('Sort range: ' + (c.sortRange || 'automatic') + ' (change)', 'settingSortRange');
 
@@ -99,6 +104,16 @@ function buildMenu_() {
   RULE_COLS.forEach(r => {
     rules.addItem(r[1] + ': ' + (c.keep[r[0]] ? 'KEEP my edits' : 'script overwrites'), 'rule_' + r[0]);
   });
+
+  const colourMenu = ui.createMenu('Backlog status colours')
+    .addItem('Colour the status cells: ' + onOff(c.statusColours), 'toggleStatusColours')
+    .addSeparator()
+    .addItem('COMPLETED: ' + (c.statusColourMap.COMPLETED || 'none') + ' (change)', 'statusColour_COMPLETED')
+    .addItem('PLAYED: ' + (c.statusColourMap.PLAYED || 'none') + ' (change)', 'statusColour_PLAYED')
+    .addItem('IDLE: ' + (c.statusColourMap.IDLE || 'none') + ' (change)', 'statusColour_IDLE')
+    .addItem('BACKLOG: ' + (c.statusColourMap.BACKLOG || 'none') + ' (change)', 'statusColour_BACKLOG')
+    .addSeparator()
+    .addItem('Reset to the default colours', 'resetStatusColours');
 
   const settings = ui.createMenu('Settings')
     .addItem('Set API key & Steam ID', 'setupCredentials')
@@ -120,6 +135,8 @@ function buildMenu_() {
     .addItem('Link game names (Steam): ' + onOff(c.linkNames), 'toggleLinkNames')
     .addItem('Genre column: ' + onOff(c.genreColumn), 'toggleGenre')
     .addItem('Status column (Steam): ' + onOff(c.statusColumn), 'toggleStatus')
+    .addSubMenu(colourMenu)
+    .addItem('Mark IDLE after ' + (c.idleMonths || 'never') + (c.idleMonths ? ' months' : '') + ' (change)', 'settingIdleMonths')
     .addItem('Re-check games played in last ' + c.recentHours + ' h (change)', 'settingRecentHours')
     .addSeparator()
     .addItem('Discord last-played posts: ' + onOff(c.postLastPlayed), 'toggleLastPlayed')
@@ -137,6 +154,7 @@ function buildMenu_() {
     .addItem('Diagnose selected game', 'diagnoseGame')
     .addItem('Set up blank sheet', 'setupSheet')
     .addItem('Set up RetroAchievements tab', 'setupRetroSheet')
+    .addItem('Add backlog status column', 'addPlayStatusColumn')
     .addSubMenu(settings)
     .addToUi();
 }
@@ -218,6 +236,17 @@ function settingRecentHours() {
   alert_('Saved.');
 }
 
+function settingIdleMonths() {
+  const v = ask_('Mark games IDLE', 'In the BACKLOG STATUS column, a game you have played but not played for this many months becomes IDLE ' +
+    '(0 = never use IDLE, 1-120, currently ' + cfg_().idleMonths + '):');
+  if (v === null) return;
+  const n = Number(v);
+  if (!(n >= 0 && n <= 120) || String(v).trim() === '') { alert_('Please enter a whole number from 0 to 120. Nothing was changed.'); return; }
+  setCfg_({ idleMonths: Math.round(n) });
+  buildMenu_();
+  alert_(Math.round(n) ? 'Saved. Played games not played for ' + Math.round(n) + ' months will show IDLE on the next update.' : 'Saved. IDLE will not be used.');
+}
+
 function settingWeeklyTime() {
   const c = cfg_();
   const d = ask_('Weekly summary day', 'Which day? (Sunday, Monday, ... or 0-6 where 0 = Sunday). Currently ' + DAY_NAMES[c.weeklyDay] + ':');
@@ -244,6 +273,7 @@ function showSettings() {
     'Cells the script overwrites: ' + (RULE_COLS.filter(r => !c.keep[r[0]]).map(r => r[1]).join(', ') || 'none') +
       '\nCells where your edits are kept: ' + (RULE_COLS.filter(r => c.keep[r[0]]).map(r => r[1]).join(', ') || 'none'),
     'Auto-update: ' + (autoUpdateOn_() ? 'ON, every ' + c.autoMinutes + ' min' : 'OFF (would run every ' + c.autoMinutes + ' min)'),
+    'BACKLOG STATUS colours: ' + (c.statusColours ? 'ON (' + PLAY_STATES.map(w => w + ' ' + (c.statusColourMap[w] || 'none')).join(', ') + ')' : 'OFF') + '\nBACKLOG STATUS column: IDLE after ' + (c.idleMonths ? c.idleMonths + ' months' : 'never'),
     'Re-check games played in last ' + c.recentHours + ' h',
     'Link game names: ' + onOff(c.linkNames),
     'Genre column: ' + onOff(c.genreColumn),
@@ -412,6 +442,7 @@ function updateSteam_(force) {
 
   const keepRules = cfg_().keep;
   const lastAch = loadJson_(props, 'LAST_ACH') || {}; // appid -> [unlocked, total] as last written by the script
+  const lastUnlock = loadJson_(props, 'LAST_UNLOCK') || {}; // appid -> unix time of the newest unlock seen
   const freeMap = JSON.parse(props.getProperty('FREE_MAP') || '{}');
   let freeMapChanged = false;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -483,7 +514,7 @@ function updateSteam_(force) {
   const toFetch = items.filter(it => it.need && !it.missing);
   const fetchAch = list => UrlFetchApp.fetchAll(list.map(it => ({
     url: 'https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/?key=' + key +
-      '&steamid=' + steamId + '&appid=' + it.game.appid + '&format=json',
+      '&steamid=' + steamId + '&appid=' + it.game.appid + '&l=english&format=json',
     muteHttpExceptions: true
   })));
   const CHUNK = 30;
@@ -588,6 +619,7 @@ function updateSteam_(force) {
     if (genreOf[i]) put('genre', i, genreOf[i]);
 
     let ach = null;
+    let newAch = [];
     if (it.need) {
       const tag = (it.shared ? (it.free ? ' (free to play)' : ' (family share)') : '') + it.note;
       const r = it.ach;
@@ -605,6 +637,10 @@ function updateSteam_(force) {
         put('updated', i, now);
       } else {
         ach = r;
+        // Achievements unlocked since the last time this game was seen (listed in the Discord post).
+        const lu = lastUnlock[game.appid];
+        if (lu !== undefined) newAch = (ach.recent || []).filter(a => a[2] > lu);
+        lastUnlock[game.appid] = Math.max(lu || 0, ach.lastUnlock || 0);
         put('unlocked', i, ach.unlocked);
         put('total', i, ach.total);
         setStatus(i, (ach.total && ach.unlocked === ach.total ? '100% complete' : (ach.notStarted ? 'OK (not started)' : 'OK')) + tag);
@@ -620,6 +656,7 @@ function updateSteam_(force) {
       hours: out.hours[i][0],
       unlocked: out.unlocked[i][0],
       total: out.total[i][0],
+      newAch: newAch,
       // "Last played" = latest play time Steam reports, or latest achievement unlock (covers shared games).
       lastTs: Math.max(game.rtime_last_played || 0, ach ? ach.lastUnlock : 0)
     });
@@ -648,13 +685,27 @@ function updateSteam_(force) {
     if (linksChanged) nameRange.setRichTextValues(rich);
   }
 
+  applyPlayStatus_(sheet, headers, nameIdx, numRows);
+
   if (freeMapChanged) props.setProperty('FREE_MAP', JSON.stringify(freeMap));
   saveJson_(props, 'LAST_ACH', lastAch);
+  saveJson_(props, 'LAST_UNLOCK', lastUnlock);
   if (genresLeft > 0) alert_(genresLeft + ' genres are still blank (Steam store rate limit). Run Update now again in a few minutes.');
   return tracked;
 }
 
 // ---------- Discord ----------
+
+/**
+ * Accepts webhook links copied from any Discord client (discord.com, discordapp.com, canary./ptb. subdomains, an /api/vN/
+ * version, a trailing ?query, #hash, /slack or /github suffix, or surrounding spaces/quotes/angle brackets) and returns
+ * the standard https://discord.com/api/webhooks/ID/TOKEN form, or '' if it is not a webhook link.
+ */
+function normalizeWebhook_(text) {
+  const t = String(text || '').trim().replace(/^[<"'\s]+|[>"'\s]+$/g, '');
+  const m = t.match(/^https?:\/\/(?:[a-z0-9-]+\.)?discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/(\d+)\/([\w-]+)/i);
+  return m ? 'https://discord.com/api/webhooks/' + m[1] + '/' + m[2] : '';
+}
 
 function setupDiscord() {
   const ui = SpreadsheetApp.getUi();
@@ -662,14 +713,20 @@ function setupDiscord() {
     'In Discord: Server Settings > Integrations > Webhooks > New Webhook > pick the channel > Copy Webhook URL.',
     ui.ButtonSet.OK_CANCEL);
   if (r.getSelectedButton() !== ui.Button.OK) return;
-  const url = r.getResponseText().trim();
-  if (url.indexOf('https://discord.com/api/webhooks/') !== 0 &&
-      url.indexOf('https://discordapp.com/api/webhooks/') !== 0) {
-    ui.alert('That doesn\'t look like a Discord webhook URL.');
+  const url = normalizeWebhook_(r.getResponseText());
+  if (!url) {
+    ui.alert('That doesn\'t look like a Discord webhook URL. It should look like https://discord.com/api/webhooks/123456789/abcDEF... ' +
+      '(Discord Canary, PTB, Vencord and Legcord links are accepted too).');
+    return;
+  }
+  const test = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json',
+    payload: JSON.stringify({ content: 'Steam Tracker is connected \u2705' }), muteHttpExceptions: true });
+  const code = test.getResponseCode();
+  if (code < 200 || code >= 300) {
+    ui.alert('Discord rejected that webhook (HTTP ' + code + '). It may have been deleted or copied incompletely. Nothing was saved.');
     return;
   }
   PropertiesService.getScriptProperties().setProperty('DISCORD_WEBHOOK', url);
-  postDiscord_({ content: 'Steam Tracker is connected \u2705' });
   ui.alert('Saved. A test message was sent to your channel.');
 }
 
@@ -721,6 +778,18 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   const base = loadJson_(props, 'BASE') || {};   // appid -> unlocked as of the last post for that game
   const doneRaw = loadJson_(props, 'DONE');      // appid -> 1 for games already at 100%
   const done = doneRaw || {};
+  // Achievements earned but not yet announced: appid -> [[name, description, unixTime], ...]
+  const pend = loadJson_(props, 'PEND') || {};
+  if (c.postLastPlayed || c.postCompletion) {
+    tracked.forEach(t => {
+      if (!t.newAch || !t.newAch.length) return;
+      const cur = pend[t.appid] || [];
+      t.newAch.forEach(a => { if (!cur.some(x => x[0] === a[0] && x[2] === a[2])) cur.push(a); });
+      cur.sort((x, y) => x[2] - y[2]);
+      pend[t.appid] = cur.slice(-15);
+    });
+  }
+  const takePend = id => { const l = pend[id] || []; delete pend[id]; return l; };
   // [games at 100%, games tracked] for one source ('steam' or 'ra')
   const at100 = src => { const l = tracked.filter(t => srcOf_(t) === src); return [l.filter(isComplete_).length, l.length]; };
 
@@ -743,7 +812,7 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   const byRecent = arr => arr.slice().sort((a, b) => b.lastTs - a.lastTs)[0];
   const changed = tracked.filter(t => {
     const s = seen[t.appid];
-    if (!s) return false;
+    if (!s || t.defer) return false;
     return isNum_(t.hours) && isNum_(s[0]) ? t.hours !== s[0] : t.unlocked !== s[1];
   });
 
@@ -767,6 +836,12 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
       : [{ name: 'Total hours', value: isNum_(pick.hours) ? pick.hours + ' h' : 'n/a', inline: true },
          { name: 'Achievements', value: achTxt, inline: true }];
     fields.push({ name: 'New since last post', value: newTxt, inline: true });
+    const earned = takePend(pick.appid);
+    if (earned.length) {
+      const b = base[pick.appid];
+      const extra = isNum_(b) && isNum_(pick.unlocked) ? Math.max(0, pick.unlocked - b - earned.length) : 0;
+      fields.push({ name: earned.length + extra > 1 ? '\uD83C\uDFC5 New achievements' : '\uD83C\uDFC5 New achievement', value: achLines_(earned, extra) });
+    }
     const embed = {
       title: '🎮 Last played: ' + pick.title,
       color: isRa ? 0xe8b400 : 0x1b2838,
@@ -786,6 +861,8 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
     if (ra) fields.push({ name: 'Hardcore', value: isNum_(t.hardcore) ? t.hardcore + ' / ' + t.total : 'n/a', inline: true });
     else fields.push({ name: 'Total hours', value: isNum_(t.hours) ? t.hours + ' h' : 'n/a', inline: true });
     fields.push({ name: 'Games at 100%', value: n[0] + ' / ' + n[1], inline: true });
+    const earnedNow = takePend(t.appid);
+    if (earnedNow.length) fields.push({ name: earnedNow.length > 1 ? '\uD83C\uDFC5 Final achievements' : '\uD83C\uDFC5 Final achievement', value: achLines_(earnedNow, 0) });
     const embed = {
       title: '🏆 100% complete: ' + t.title,
       description: ra ? (t.hardcore === t.total ? 'Mastered in hardcore!' : 'Every achievement unlocked (softcore).')
@@ -861,6 +938,7 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
   // ----- Save state for the next run -----
   const newSeen = Object.assign({}, seen); // keep history of games not in this run (e.g. one source failed)
   tracked.forEach(t => {
+    if (t.defer) return;                       // keep the old numbers so the change is still seen next run (with its achievement names)
     newSeen[t.appid] = [t.hours, t.unlocked, t.total];
     if (!isNum_(base[t.appid]) && isNum_(t.unlocked)) base[t.appid] = t.unlocked;
     // The weekly baseline starts at setup, restarts after each weekly post, and picks up new games as they appear.
@@ -871,6 +949,9 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
     saveJson_(props, 'BASE', base);
     saveJson_(props, 'DONE', done);
     saveJson_(props, 'WEEK_BASE', week);
+    // Keep the pending list small (per game and in total).
+    while (JSON.stringify(pend).length > 60000) { const k = Object.keys(pend)[0]; if (k === undefined) break; delete pend[k]; }
+    saveJson_(props, 'PEND', pend);
   } catch (e) { /* storage full: notifications may repeat */ }
 }
 
@@ -1085,7 +1166,7 @@ function setupLayout_(sheet, layout) {
 // Header names that belong to the game table (used to work out which columns the Sort / Add rows tools move).
 const TABLE_HEADERS = ['game list', 'game', 'name', 'title', 'game name', 'genre', 'appid', 'game id', 'console',
   'collected achies', 'hardcore achies', 'total achies', 'amount done', 'progress', 'completed', 'hours played',
-  'last played', 'last updated', 'status'];
+  'last played', 'last updated', 'status', 'backlog status', 'play status', 'backlog'];
 
 function headersOf_(sheet) {
   const n = sheet.getLastColumn();
@@ -1135,10 +1216,12 @@ function sortPctLow() { sortList_('pctLow'); }
 function sortHours() { sortList_('hours'); }
 function sortRecent() { sortList_('recent'); }
 function sortGenre() { sortList_('genre'); }
+function sortBacklog() { sortList_('backlog'); }
 
 const SORT_LABELS = {
   az: 'A → Z', za: 'Z → A', pctHigh: 'completion % (highest first)', pctLow: 'completion % (lowest first)',
-  hours: 'hours played (most first)', recent: 'last played (newest first)', genre: 'genre (A → Z)'
+  hours: 'hours played (most first)', recent: 'last played (newest first)', genre: 'genre (A → Z)',
+  backlog: 'backlog status (BACKLOG, PLAYED, IDLE, COMPLETED), then A → Z'
 };
 
 function sortList_(kind) {
@@ -1150,6 +1233,11 @@ function sortList_(kind) {
     if (nameIdx === -1) { alert_('Could not find a GAME LIST column in row 1 of "' + sheet.getName() + '".'); return; }
     const need = { pctHigh: ['collected achies', 'total achies'], pctLow: ['collected achies', 'total achies'],
                    hours: ['hours played'], recent: ['last played'], genre: ['genre'] }[kind] || [];
+    const statusIdx = headers.findIndex(h => PLAY_STATUS_HEADERS.indexOf(h) !== -1);
+    if (kind === 'backlog' && statusIdx === -1) {
+      alert_('"' + sheet.getName() + '" has no BACKLOG STATUS column. Run Steam Tracker > Add backlog status column first.');
+      return;
+    }
     const missing = need.filter(h => H(h) === -1);
     if (missing.length) { alert_('"' + sheet.getName() + '" has no ' + missing[0].toUpperCase() + ' column, so it can\'t be sorted that way.'); return; }
 
@@ -1166,7 +1254,8 @@ function sortList_(kind) {
       const last = cellOf(r, 'last played');
       return { i: i, name: String(r[nameIdx]).trim(), pct: unl !== null && tot ? unl / tot : null,
                hours: num(cellOf(r, 'hours played')), last: last instanceof Date ? last.getTime() : null,
-               genre: String(cellOf(r, 'genre')).trim() };
+               genre: String(cellOf(r, 'genre')).trim(),
+               status: statusIdx >= 0 ? String(r[statusIdx]).trim().toUpperCase() : '' };
     });
     const nameCmp = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
     const byNum = (k, desc) => (a, b) => {
@@ -1176,7 +1265,10 @@ function sortList_(kind) {
       if (y === null) return -1;
       return (desc ? y - x : x - y) || nameCmp(a, b);
     };
+    const STATUS_ORDER = { BACKLOG: 0, PLAYED: 1, IDLE: 2, COMPLETED: 3 };
+    const statusRank = r => (STATUS_ORDER[r.status] !== undefined ? STATUS_ORDER[r.status] : 4);   // blank / unknown last
     const cmps = {
+      backlog: (a, b) => (statusRank(a) - statusRank(b)) || nameCmp(a, b),
       az: nameCmp, za: (a, b) => nameCmp(b, a),
       pctHigh: byNum('pct', true), pctLow: byNum('pct', false), hours: byNum('hours', true), recent: byNum('last', true),
       genre: (a, b) => (a.genre === '' ? (b.genre === '' ? nameCmp(a, b) : 1) : b.genre === '' ? -1 :
@@ -1261,6 +1353,13 @@ function extendRows_(sheet, n) {
     sheet.getRange(src, span.min + 1, 1, span.max - span.min + 1)
       .copyTo(sheet.getRange(first, span.min + 1, n, span.max - span.min + 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
   }
+  // Also copy any dropdowns / chips (e.g. on the BACKLOG STATUS column) down into the new rows.
+  if (span) {
+    try {
+      sheet.getRange(src, span.min + 1, 1, span.max - span.min + 1)
+        .copyTo(sheet.getRange(first, span.min + 1, n, span.max - span.min + 1), SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION, false);
+    } catch (e) { /* cosmetic */ }
+  }
 
   // Point every range in the totals row at the new last game row (this also fixes totals that stopped short).
   let lastGame = first + n - 1;
@@ -1308,6 +1407,179 @@ function rule_total() { toggleRule_('total'); }
 function rule_hours() { toggleRule_('hours'); }
 function rule_lastPlayed() { toggleRule_('lastPlayed'); }
 function rule_updated() { toggleRule_('updated'); }
+function rule_playStatus() { toggleRule_('playStatus'); }
+
+// ---------- BACKLOG STATUS column ----------
+// Optional column (header BACKLOG STATUS, PLAY STATUS or BACKLOG, anywhere on the sheet). The script fills it with
+// COMPLETED / IDLE / PLAYED / BACKLOG as text. Chips or colours you add yourself stay (the script never touches them). A cell that holds your own formula is left alone.
+
+const PLAY_STATUS_HEADERS = ['backlog status', 'play status', 'backlog'];
+const PLAY_STATES = ['BACKLOG', 'PLAYED', 'IDLE', 'COMPLETED'];
+
+function playStatusOf_(unlocked, total, hours, lastPlayed, cutoff) {
+  const u = Number(unlocked) || 0, t = Number(total) || 0, h = Number(hours) || 0;
+  if (t > 0 && u >= t) return 'COMPLETED';
+  if (h > 0 || u > 0) {                       // played (achievements count too: shared and retro games have no hours)
+    const d = lastPlayed instanceof Date ? lastPlayed : (lastPlayed ? new Date(lastPlayed) : null);
+    if (cutoff && d && !isNaN(d.getTime()) && d < cutoff) return 'IDLE';
+    return 'PLAYED';
+  }
+  return 'BACKLOG';
+}
+
+function applyPlayStatus_(sheet, headers, nameIdx, numRows) {
+  const si = headers.findIndex(h => PLAY_STATUS_HEADERS.indexOf(h) !== -1);
+  if (si === -1 || numRows < 1) return;
+  const c = cfg_();
+  const read = h => { const i = headers.indexOf(h); return i < 0 ? null : sheet.getRange(2, i + 1, numRows, 1).getValues(); };
+  const names = sheet.getRange(2, nameIdx + 1, numRows, 1).getValues();
+  const unl = read('collected achies'), tot = read('total achies'), hrs = read('hours played'), lp = read('last played');
+  const rng = sheet.getRange(2, si + 1, numRows, 1);
+  const old = rng.getValues(), form = rng.getFormulas();
+  if (/^=ARRAYFORMULA\(/i.test(form[0][0]) && /BACKLOG/i.test(form[0][0])) {       // the formula an earlier version installed
+    sheet.getRange(2, si + 1).clearContent(); form[0][0] = ''; old[0][0] = '';
+  }
+  let cutoff = null;
+  if (c.idleMonths > 0) { cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - c.idleMonths); }
+  const out = old.map((o, i) => {
+    if (form[i][0]) return [form[i][0]];                                            // your own formula: untouched
+    if (c.keep.playStatus && String(o[0]).trim() !== '') return [o[0]];             // "keep my edits"
+    if (String(names[i][0]).trim() === '') return [''];
+    return [playStatusOf_(unl && unl[i][0], tot && tot[i][0], hrs && hrs[i][0], lp && lp[i][0], cutoff)];
+  });
+  rng.setValues(out);
+  syncStatusColours_(sheet, si, numRows);
+
+  // The script only writes the text. Dropdowns, chips and colours you add to this column yourself are left alone.
+}
+
+// ---------- BACKLOG STATUS colours ----------
+// Google doesn't let scripts set the colours of Insert > Dropdown chips, so this colours the cells with conditional
+// formatting instead (use one or the other). Off by default. When on, the script owns the four rules for this column.
+
+const COLOUR_NAMES = { red: '#f4c7c3', green: '#b7e1cd', blue: '#c9daf8', yellow: '#fff2cc', orange: '#fce5cd', purple: '#d9d2e9',
+  pink: '#ead1dc', teal: '#d0e0e3', grey: '#e6e6e6', gray: '#e6e6e6', white: '#ffffff' };
+
+function statusRulesOf_(rules, col1) {
+  const words = PLAY_STATES.map(x => x.toUpperCase());
+  return rules.filter(r => {
+    try {
+      const bc = r.getBooleanCondition();
+      return !!bc && bc.getCriteriaValues().some(v => words.indexOf(String(v).toUpperCase()) !== -1) &&
+        r.getRanges().some(g => g.getColumn() === col1);
+    } catch (e) { return false; }
+  });
+}
+
+function syncStatusColours_(sheet, si, numRows) {
+  const c = cfg_();
+  if (!c.statusColours) return;
+  try {
+    const all = sheet.getConditionalFormatRules();
+    const mine = statusRulesOf_(all, si + 1);
+    const want = PLAY_STATES.filter(w => c.statusColourMap[w]);
+    const same = mine.length === want.length && want.every(w => mine.some(r => {
+      try { const bc = r.getBooleanCondition(); return String(bc.getCriteriaValues()[0]).toUpperCase() === w &&
+        String(bc.getBackground()).toLowerCase() === c.statusColourMap[w].toLowerCase(); } catch (e) { return false; }
+    }));
+    if (same) return;
+    const area = sheet.getRange(2, si + 1, Math.max(sheet.getMaxRows() - 1, numRows), 1);
+    const rest = all.filter(r => mine.indexOf(r) === -1);
+    sheet.setConditionalFormatRules(rest.concat(want.map(w =>
+      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(w).setBackground(c.statusColourMap[w]).setRanges([area]).build())));
+  } catch (e) { /* colours are cosmetic */ }
+}
+
+function removeStatusColours_(sheet, si) {
+  try {
+    const all = sheet.getConditionalFormatRules();
+    const mine = statusRulesOf_(all, si + 1);
+    if (mine.length) sheet.setConditionalFormatRules(all.filter(r => mine.indexOf(r) === -1));
+  } catch (e) { /* cosmetic */ }
+}
+
+// Runs fn(sheet, statusColumnIndex) on each tracker tab that has a status column.
+function eachStatusSheet_(fn) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  [cfg_().sheetName, cfg_().raSheetName].forEach(n => {
+    const sh = ss.getSheetByName(n);
+    if (!sh) return;
+    const si = headersOf_(sh).findIndex(h => PLAY_STATUS_HEADERS.indexOf(h) !== -1);
+    if (si !== -1) fn(sh, si);
+  });
+}
+
+function refreshPlayStatus_(sheet) {
+  const headers = headersOf_(sheet);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) return;
+  applyPlayStatus_(sheet, headers, nameIdx, trimGameRows_(sheet, nameIdx));
+}
+
+function toggleStatusColours() {
+  const on = !cfg_().statusColours;
+  setCfg_({ statusColours: on });
+  eachStatusSheet_((sh, si) => { if (on) refreshPlayStatus_(sh); else removeStatusColours_(sh, si); });
+  buildMenu_();
+  alert_(on ? 'Status colours are ON. The script now colours the BACKLOG STATUS cells (and replaces any colour rules for those four words in that column). Use the colour options below to change them.'
+            : 'Status colours are OFF. The script\'s colour rules were removed from the column.');
+}
+
+function setStatusColour_(word) {
+  const cur = cfg_().statusColourMap[word];
+  const v = ask_(word + ' colour', 'Type a colour for ' + word + ': a hex code like #b7e1cd, or a name (red, green, blue, yellow, orange, purple, pink, teal, grey, white), or "none" for no colour. Currently ' + (cur || 'none') + '.');
+  if (v === null) return;
+  const t = String(v).trim().toLowerCase();
+  let hex = null;
+  if (t === 'none') hex = '';
+  else if (COLOUR_NAMES[t]) hex = COLOUR_NAMES[t];
+  else if (/^#?([0-9a-f]{3}|[0-9a-f]{6})$/.test(t)) {
+    hex = t.charAt(0) === '#' ? t : '#' + t;
+    if (hex.length === 4) hex = '#' + hex.slice(1).split('').map(ch => ch + ch).join('');
+  }
+  if (hex === null) { alert_('That isn\'t a colour I understand. Use a hex code like #b7e1cd or a name like green. Nothing was changed.'); return; }
+  const map = Object.assign({}, cfg_().statusColourMap); map[word] = hex;
+  setCfg_({ statusColourMap: map });
+  buildMenu_();
+  if (cfg_().statusColours) eachStatusSheet_(sh => refreshPlayStatus_(sh));
+  alert_(word + ' is now ' + (hex || 'uncoloured') + '.' + (cfg_().statusColours ? '' : ' Turn on "Colour the status cells" to see it.'));
+}
+function statusColour_COMPLETED() { setStatusColour_('COMPLETED'); }
+function statusColour_PLAYED() { setStatusColour_('PLAYED'); }
+function statusColour_IDLE() { setStatusColour_('IDLE'); }
+function statusColour_BACKLOG() { setStatusColour_('BACKLOG'); }
+
+function resetStatusColours() {
+  setCfg_({ statusColourMap: Object.assign({}, DEFAULTS.statusColourMap) });
+  buildMenu_();
+  if (cfg_().statusColours) eachStatusSheet_(sh => refreshPlayStatus_(sh));
+  alert_('Status colours reset to the defaults.');
+}
+
+/**
+ * Menu: Add backlog status column. Inserts a BACKLOG STATUS column directly left of GAME LIST on the tab you are
+ * looking at (Steam or RetroAchievements) and fills it. Everything to its right shifts one column; formulas, links and
+ * lists move with it. If the tab already has the column, it just refreshes it.
+ */
+function addPlayStatusColumn() {
+  const sheet = targetSheet_();
+  let headers = headersOf_(sheet);
+  let nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) { alert_('Could not find a GAME LIST column in row 1 of "' + sheet.getName() + '". Nothing was changed.'); return; }
+  const had = headers.findIndex(h => PLAY_STATUS_HEADERS.indexOf(h) !== -1) !== -1;
+  if (!had) {
+    sheet.insertColumnBefore(nameIdx + 1);
+    sheet.getRange(1, nameIdx + 2).copyTo(sheet.getRange(1, nameIdx + 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    sheet.getRange(1, nameIdx + 1).setValue('BACKLOG STATUS');
+    sheet.setColumnWidth(nameIdx + 1, 120);
+    headers = headersOf_(sheet);
+    nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  }
+  applyPlayStatus_(sheet, headers, nameIdx, trimGameRows_(sheet, nameIdx));
+  alert_(had ? 'The "' + sheet.getName() + '" tab already has a backlog status column. It was refreshed.'
+    : 'Added a BACKLOG STATUS column to "' + sheet.getName() + '", left of GAME LIST. ' +
+      (cfg_().sortRange ? 'Note: your custom sort range (' + cfg_().sortRange + ') was set before the new column, so check it in Settings > Sort the list.' : 'It keeps itself up to date on every update.'));
+}
 
 // ---------- RetroAchievements ----------
 
@@ -1525,12 +1797,17 @@ function updateRetro_(force) {
   const gblank = it => String(cell(data[it.i], col.genre)).trim() === '';
   const needInfo = items.filter(it => !it.missing && (!it.entry ||
     (col.genre >= 0 && genreCache['ra' + it.id] === undefined && (!keepRules.genre || gblank(it)))));
+  // Games with a newer achievement than last time also need their achievement list (names for the Discord post).
+  const lastUnlock = loadJson_(props, 'LAST_UNLOCK') || {};
+  const epochOf = e => { const d = e ? parseRaDate_(e.MostRecentAwardedDate) : null; return d ? Math.floor(d.getTime() / 1000) : 0; };
+  const needAch = items.filter(it => !it.missing && it.entry && lastUnlock['ra' + it.id] !== undefined &&
+    epochOf(it.entry) > lastUnlock['ra' + it.id]);
   const ids = [];
-  needInfo.forEach(it => { if (ids.indexOf(it.id) === -1) ids.push(it.id); });
+  needInfo.concat(needAch).forEach(it => { if (ids.indexOf(it.id) === -1) ids.push(it.id); });
   const infos = ids.length ? raFetchInfo_(ids, 150) : {};
   let cacheChanged = false;
   ids.forEach(id => {
-    if (infos[id]) { genreCache['ra' + id] = String(infos[id].Genre || '').trim() || 'Unknown'; cacheChanged = true; }
+    if (infos[id] && genreCache['ra' + id] === undefined) { genreCache['ra' + id] = String(infos[id].Genre || '').trim() || 'Unknown'; cacheChanged = true; }
   });
   if (cacheChanged) saveJson_(props, 'GENRE_CACHE', genreCache);
 
@@ -1602,6 +1879,27 @@ function updateRetro_(force) {
       put('hardcore', i, hc);
       if (changed) put('updated', i, now);
       setNote(i, it.note);
+      // Newly earned achievements (names + descriptions) for the Discord post.
+      const ukey = 'ra' + it.id, lu = lastUnlock[ukey];
+      const topTs = e ? epochOf(e) : (lastDate ? Math.floor(lastDate.getTime() / 1000) : 0);
+      let newAch = [], defer = false;
+      if (lu === undefined) {
+        if (topTs) lastUnlock[ukey] = topTs;                       // first time seen: just remember where we are
+      } else if (topTs > lu) {
+        if (inf && inf.Achievements) {
+          Object.keys(inf.Achievements).forEach(k => {
+            const a = inf.Achievements[k];
+            const d = parseRaDate_(a.DateEarnedHardcore || a.DateEarned);
+            const ts = d ? Math.floor(d.getTime() / 1000) : 0;
+            if (ts > lu) newAch.push([clip_(a.Title, 60), clip_(a.Description, 140), ts]);
+          });
+          newAch.sort((x, y) => x[2] - y[2]);
+          newAch = newAch.slice(-15);
+          lastUnlock[ukey] = Math.max(lu, topTs);
+        } else {
+          defer = true;                                             // no details this time: hold the Discord post and try again next run
+        }
+      }
       tracked.push({
         src: 'ra',
         title: it.title + (consoleName ? ' [' + consoleName + ']' : ''),
@@ -1609,6 +1907,8 @@ function updateRetro_(force) {
         unlocked: out.unlocked[i][0],
         total: out.total[i][0],
         hardcore: out.hardcore ? out.hardcore[i][0] : hc,
+        newAch: newAch,
+        defer: defer,
         lastTs: lastDate ? Math.floor(lastDate.getTime() / 1000) : 0
       });
     } else {
@@ -1621,6 +1921,8 @@ function updateRetro_(force) {
   if (col.lastPlayed >= 0) sheet.getRange(2, col.lastPlayed + 1, numRows, 1).setNumberFormat('yyyy-mm-dd');
   if (col.updated >= 0) sheet.getRange(2, col.updated + 1, numRows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
   if (notes.some((n, i) => n[0] !== oldNotes[i])) nameRange.setNotes(notes);
+  saveJson_(props, 'LAST_UNLOCK', lastUnlock);
+  applyPlayStatus_(sheet, headers, nameIdx, numRows);
   return tracked;
 }
 
@@ -1672,6 +1974,29 @@ function parseGenre_(res, appid) {
 
 // Returns {unlocked,total,lastUnlock}, or {none: reason} when Steam has no achievements for this game
 // ('none', 'nostats' = never launched, 'private' = game details hidden), or {err: 'HTTP ###'} on a hiccup.
+// Shortens text for Discord: single line, at most n characters.
+function clip_(text, n) {
+  const t = String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '\u2026' : t;
+}
+
+// Escapes Discord markdown characters so achievement names show as written.
+function mdEsc_(text) { return String(text).replace(/([\\*_~`|>])/g, '\\$1'); }
+
+// [[name, description, unixTime], ...] -> bullet list that fits a Discord field (max 1024 characters). `more` = extra not shown.
+function achLines_(list, more) {
+  const lines = [];
+  let used = 0, shown = 0;
+  list.slice().sort((a, b) => a[2] - b[2]).forEach(a => {
+    const line = '\uD83C\uDFC5 **' + mdEsc_(a[0]) + '**' + (a[1] ? ' \u2014 ' + mdEsc_(a[1]) : '');
+    if (shown >= 10 || used + line.length + 1 > 940) return;
+    lines.push(line); used += line.length + 1; shown++;
+  });
+  const left = (list.length - shown) + Math.max(0, more || 0);
+  if (left > 0) lines.push('\u2026and ' + left + ' more');
+  return lines.join('\n');
+}
+
 function parseAch_(res) {
   const code = res.getResponseCode();
   let ps = null;
@@ -1682,7 +2007,10 @@ function parseAch_(res) {
     if (!ps.achievements) return { none: 'none' };       // the game has stats but no achievements
     const got = ps.achievements.filter(a => a.achieved === 1);
     const lastUnlock = got.reduce((m, a) => Math.max(m, a.unlocktime || 0), 0);
-    return { unlocked: got.length, total: ps.achievements.length, lastUnlock: lastUnlock };
+    // The newest unlocks with their names (used for the Discord posts).
+    const recent = got.filter(a => a.unlocktime).sort((a, b) => b.unlocktime - a.unlocktime).slice(0, 15)
+      .map(a => [clip_(a.name || a.apiname, 60), clip_(a.description, 140), a.unlocktime]);
+    return { unlocked: got.length, total: ps.achievements.length, lastUnlock: lastUnlock, recent: recent };
   }
   if (/not public|private/i.test(msg)) return { none: 'private' };
   if (/no stats/i.test(msg)) return { none: 'nostats' };
