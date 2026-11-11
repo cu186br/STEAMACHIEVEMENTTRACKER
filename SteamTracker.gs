@@ -16,7 +16,7 @@ const DEFAULTS = {
   raOn: false,           // RetroAchievements on a second tab
   raSheetName: 'RetroAchievements',
   statusColours: false,  // BACKLOG STATUS column: colour the cells (conditional formatting managed by the script)
-  statusColourMap: { COMPLETED: '#d9d2e9', PLAYED: '#d9ead3', IDLE: '#ffe599', BACKLOG: '#f4cccc' },
+  statusColourMap: { COMPLETED: '#d9d2e9', ACTIVE: '#d9ead3', IDLE: '#ffe599', BACKLOG: '#f4cccc' },
   idleMonths: 6,         // BACKLOG STATUS column: a played game not played for this many months becomes IDLE (0 = never)
   gameRows: 250,         // game rows created on a new blank sheet (use Add game rows to grow it later)
   sortRange: '',         // columns the Sort options move, e.g. 'A:L'. Empty = automatic (GAME LIST through the last tracker column)
@@ -60,7 +60,12 @@ function cfg_() {
     const raw = PropertiesService.getScriptProperties().getProperty('SETTINGS');
     const c = Object.assign({}, DEFAULTS, raw ? JSON.parse(raw) : {});
     c.keep = Object.assign({}, DEFAULTS.keep, c.keep || {});
-    c.statusColourMap = Object.assign({}, DEFAULTS.statusColourMap, c.statusColourMap || {});
+    const saved = Object.assign({}, c.statusColourMap || {});
+    if (saved.PLAYED !== undefined) { if (saved.ACTIVE === undefined) saved.ACTIVE = saved.PLAYED; delete saved.PLAYED; }   // PLAYED was renamed ACTIVE
+    // Colours still at the old defaults move to the new defaults; colours you chose yourself are kept.
+    const OLD = { COMPLETED: '#b7e1cd', ACTIVE: '#c9daf8', IDLE: '#fce8b2', BACKLOG: '#e6e6e6' };
+    Object.keys(OLD).forEach(k => { if (String(saved[k]).toLowerCase() === OLD[k]) delete saved[k]; });
+    c.statusColourMap = Object.assign({}, DEFAULTS.statusColourMap, saved);
     return c;
   } catch (e) {
     return Object.assign({}, DEFAULTS);
@@ -107,6 +112,7 @@ function buildMenu_() {
 
   const toolsMenu = ui.createMenu('Tools')
     .addItem('Diagnose selected game', 'diagnoseGame')
+    .addItem('Send test 100% post to Discord', 'sendTestCompletion')
     .addItem('Add game rows\u2026', 'addGameRows')
     .addSeparator()
     .addItem('Add BACKLOG STATUS column', 'addPlayStatusColumn')
@@ -260,7 +266,7 @@ function settingIdleMonths() {
   if (!(n >= 0 && n <= 120) || String(v).trim() === '') { alert_('Please enter a whole number from 0 to 120. Nothing was changed.'); return; }
   setCfg_({ idleMonths: Math.round(n) });
   buildMenu_();
-  alert_(Math.round(n) ? 'Saved. Played games not played for ' + Math.round(n) + ' months will show IDLE on the next update.' : 'Saved. IDLE will not be used.');
+  alert_(Math.round(n) ? 'Saved. Games you have played but not for ' + Math.round(n) + ' months will show IDLE on the next update.' : 'Saved. IDLE will not be used.');
 }
 
 function settingWeeklyTime() {
@@ -512,7 +518,7 @@ function updateSteam_(force) {
     const statusText = col.status >= 0 ? String(cell(row, col.status)) : '';
     const lastFetch = cell(row, col.updated);
     const stale = !(lastFetch instanceof Date) || (nowSec * 1000 - lastFetch.getTime()) > STALE_HOURS * 3600 * 1000;
-    const failedBefore = /^(Retrying|Private|Steam (error|says))/.test(statusText); // a failed fetch is retried on the next run
+    const failedBefore = /^(Retrying|Private|Not owned or private|Steam (error|says))/.test(statusText); // a failed fetch is retried on the next run
     // A number you changed by hand (and haven't told the script to keep) is put back to Steam's value.
     const la = lastAch[game.appid];
     const edited = !!la && ((!keepRules.unlocked && cell(row, col.unlocked) !== la[0]) ||
@@ -647,7 +653,7 @@ function updateSteam_(force) {
         // Steam hiccup: keep the old values and leave LAST UPDATED alone; it is retried on the next run.
         setStatus(i, 'Retrying' + tag, 'Steam returned an error (' + r.err + '). The script tries again on the next update. ' + why);
       } else if (r.none === 'private') {
-        setStatus(i, 'Private' + tag, 'Steam says your game details are private. In Steam, set Profile and Game details to Public. ' + why);
+        setStatus(i, 'Not owned or private', 'Steam returned no data: either you don\'t have this game, or your Steam Profile and Game details are private. If you do own it, set both to Public in Steam\'s privacy settings. ' + it.note);
       } else if (r.none === 'nostats') {
         setStatus(i, 'No stats' + tag, 'Steam has no stats for you in this game, so the existing numbers were kept. ' + why);
         put('updated', i, now);
@@ -677,6 +683,7 @@ function updateSteam_(force) {
       hours: out.hours[i][0],
       unlocked: out.unlocked[i][0],
       total: out.total[i][0],
+      cover: 'https://cdn.cloudflare.steamstatic.com/steam/apps/' + game.appid + '/header.jpg',
       newAch: newAch,
       // "Last played" = latest play time Steam reports, or latest achievement unlock (covers shared games).
       lastTs: Math.max(game.rtime_last_played || 0, ach ? ach.lastUnlock : 0)
@@ -775,6 +782,94 @@ const round1_ = n => Math.round(n * 10) / 10;
 const srcOf_ = t => t.src || 'steam';
 const SRC_NAME = { steam: 'Steam', ra: 'RetroAchievements' };
 
+// The 100% complete post. `n` = [games at 100%, games tracked]; `earned` = the final achievements (may be empty).
+function completionEmbed_(t, n, earned, test) {
+  const ra = srcOf_(t) === 'ra';
+  const fields = [{ name: 'Achievements', value: t.unlocked + ' / ' + t.total, inline: true }];
+  if (ra) fields.push({ name: 'Hardcore', value: isNum_(t.hardcore) ? t.hardcore + ' / ' + t.total : 'n/a', inline: true });
+  else fields.push({ name: 'Total hours', value: isNum_(t.hours) ? t.hours + ' h' : 'n/a', inline: true });
+  fields.push({ name: 'Games at 100%', value: n[0] + ' / ' + n[1], inline: true });
+  if (earned.length) fields.push({ name: earned.length > 1 ? '\uD83C\uDFC5 Final achievements' : '\uD83C\uDFC5 Final achievement', value: achLines_(earned, 0) });
+  const lead = test ? 'This is a test message. ' : '';
+  const embed = {
+    title: (test ? '\uD83E\uDDEA TEST \u2014 ' : '') + '\uD83C\uDFC6 100% complete: ' + t.title,
+    description: lead + (ra ? (t.hardcore === t.total ? 'Mastered in hardcore!' : 'Every achievement unlocked (softcore).') : 'Every achievement unlocked!'),
+    color: 0xf1c40f,
+    fields: fields
+  };
+  if (t.cover) embed[ra ? 'thumbnail' : 'image'] = { url: t.cover };   // Steam: wide header image; RetroAchievements: game icon
+  if (ra) embed.footer = { text: 'RetroAchievements' };
+  return embed;
+}
+
+// Menu: sends a sample 100% post (using a finished game from your sheet if there is one) so you can see how it looks.
+function sendTestCompletion() {
+  if (!PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK')) {
+    alert_('Set your Discord webhook first (Settings > Accounts > Discord webhook).');
+    return;
+  }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const c = cfg_();
+  const picks = [];
+  const finished = (sheet, src) => {
+    if (!sheet) return null;
+    const h = headersOf_(sheet);
+    const ni = h.findIndex(x => NAME_HEADERS.indexOf(x) !== -1), ui = h.indexOf('collected achies'), ti = h.indexOf('total achies');
+    if (ni === -1 || ui === -1 || ti === -1) return null;
+    const rows = sheet.getRange(2, 1, trimGameRows_(sheet, ni), sheet.getLastColumn()).getValues();
+    const col = k => h.indexOf(k);
+    let best = null, nDone = 0;
+    rows.forEach(r => {
+      if (!(typeof r[ui] === 'number' && typeof r[ti] === 'number' && r[ti] > 0 && r[ui] === r[ti])) return;
+      nDone++;
+      const when = col('date completed') >= 0 && r[col('date completed')] instanceof Date ? r[col('date completed')].getTime() : 0;
+      if (!best || when >= best.when) best = { row: r, when: when };
+    });
+    if (!best) return null;
+    const r = best.row;
+    const t = { src: src, title: String(r[ni]).trim(), unlocked: r[ui], total: r[ti], n: [nDone, rows.length] };
+    if (src === 'steam') {
+      t.hours = col('hours played') >= 0 && typeof r[col('hours played')] === 'number' ? r[col('hours played')] : undefined;
+      const id = col('appid') >= 0 ? r[col('appid')] : '';
+      if (id) t.cover = 'https://cdn.cloudflare.steamstatic.com/steam/apps/' + id + '/header.jpg';
+    } else {
+      t.hardcore = col('hardcore achies') >= 0 ? r[col('hardcore achies')] : undefined;
+      t.consoleName = col('console') >= 0 ? String(r[col('console')]).trim() : '';
+    }
+    return t;
+  };
+  const steam = finished(ss.getSheetByName(c.sheetName) || ss.getSheets()[0], 'steam');
+  if (steam) picks.push(steam);
+  if (c.raOn && raUser_()) {
+    const ra = finished(ss.getSheetByName(c.raSheetName), 'ra');
+    if (ra) {
+      try {   // the game icon comes from your RetroAchievements history
+        const entries = raFetchProgress_();
+        const byTitle = {};
+        entries.forEach(e => { e._key = normRa_(e.Title); (byTitle[e._key] = byTitle[e._key] || []).push(e); });
+        const m = raMatch_(ra.title, ra.consoleName, byTitle, entries);
+        if (m.entry) ra.cover = raImage_(m.entry.ImageIcon);
+      } catch (e) { /* post without an icon */ }
+      ra.title += ra.consoleName ? ' [' + ra.consoleName + ']' : '';
+      picks.push(ra);
+    }
+  }
+  let example = false;
+  if (!picks.length) {
+    example = true;
+    picks.push({ src: 'steam', title: 'Example Game', unlocked: 50, total: 50, hours: 12.3, n: [1, 1],
+      cover: 'https://cdn.cloudflare.steamstatic.com/steam/apps/620/header.jpg' });
+  }
+  let bad = 0;
+  picks.forEach(t => {
+    const code = postDiscord_({ embeds: [completionEmbed_(t, t.n, [], true)] });
+    if (code < 200 || code >= 300) bad++;
+  });
+  alert_(bad ? 'Discord rejected the test message. Set the webhook again under Settings > Accounts > Discord webhook.'
+    : 'Test sent to Discord' + (example ? ' (no game on your sheet is at 100% yet, so it uses an example game).' : ' using a finished game from your sheet.') +
+      ' Nothing was recorded, so real posts are not affected.');
+}
+
 // Discord posts (last played, 100% complete, weekly summary), based only on the games on your sheet.
 function notifyDiscord_(tracked, force, weeklyNow, tz) {
   const props = PropertiesService.getScriptProperties();
@@ -863,23 +958,7 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
 
   // ----- 2. (continued) post the completions -----
   (c.postCompletion ? completed : []).forEach(t => {
-    const ra = srcOf_(t) === 'ra';
-    const n = at100(srcOf_(t));
-    const fields = [{ name: 'Achievements', value: t.unlocked + ' / ' + t.total, inline: true }];
-    if (ra) fields.push({ name: 'Hardcore', value: isNum_(t.hardcore) ? t.hardcore + ' / ' + t.total : 'n/a', inline: true });
-    else fields.push({ name: 'Total hours', value: isNum_(t.hours) ? t.hours + ' h' : 'n/a', inline: true });
-    fields.push({ name: 'Games at 100%', value: n[0] + ' / ' + n[1], inline: true });
-    const earnedNow = takePend(t.appid);
-    if (earnedNow.length) fields.push({ name: earnedNow.length > 1 ? '\uD83C\uDFC5 Final achievements' : '\uD83C\uDFC5 Final achievement', value: achLines_(earnedNow, 0) });
-    const embed = {
-      title: '🏆 100% complete: ' + t.title,
-      description: ra ? (t.hardcore === t.total ? 'Mastered in hardcore!' : 'Every achievement unlocked (softcore).')
-                      : 'Every achievement unlocked!',
-      color: 0xf1c40f,
-      fields: fields
-    };
-    if (ra) embed.footer = { text: 'RetroAchievements' };
-    postDiscord_({ embeds: [embed] });
+    postDiscord_({ embeds: [completionEmbed_(t, at100(srcOf_(t)), takePend(t.appid), false)] });
     Utilities.sleep(500);
   });
 
@@ -966,12 +1045,12 @@ function notifyDiscord_(tracked, force, weeklyNow, tz) {
 function postDiscord_(payload) {
   const hook = PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK');
   if (!hook) return;
-  UrlFetchApp.fetch(hook, {
+  return UrlFetchApp.fetch(hook, {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
-  });
+  }).getResponseCode();
 }
 
 // ---------- troubleshooting ----------
@@ -1228,7 +1307,7 @@ function sortDoneOld() { sortList_('doneOld'); }
 const SORT_LABELS = {
   az: 'A → Z', za: 'Z → A', pctHigh: 'completion % (highest first)', pctLow: 'completion % (lowest first)',
   hours: 'hours played (most first)', recent: 'last played (newest first)', genre: 'genre (A → Z)',
-  backlog: 'backlog status (BACKLOG, PLAYED, IDLE, COMPLETED), then A → Z',
+  backlog: 'backlog status (BACKLOG, ACTIVE, IDLE, COMPLETED), then A → Z',
   doneNew: 'date completed (newest first)', doneOld: 'date completed (oldest first)'
 };
 
@@ -1275,7 +1354,7 @@ function sortList_(kind) {
       if (y === null) return -1;
       return (desc ? y - x : x - y) || nameCmp(a, b);
     };
-    const STATUS_ORDER = { BACKLOG: 0, PLAYED: 1, IDLE: 2, COMPLETED: 3 };
+    const STATUS_ORDER = { BACKLOG: 0, ACTIVE: 1, PLAYED: 1, IDLE: 2, COMPLETED: 3 };   // PLAYED = the old name for ACTIVE
     const statusRank = r => (STATUS_ORDER[r.status] !== undefined ? STATUS_ORDER[r.status] : 4);   // blank / unknown last
     const cmps = {
       doneNew: byNum('done', true), doneOld: byNum('done', false),
@@ -1423,10 +1502,10 @@ function rule_playStatus() { toggleRule_('playStatus'); }
 
 // ---------- BACKLOG STATUS column ----------
 // Optional column (header BACKLOG STATUS, PLAY STATUS or BACKLOG, anywhere on the sheet). The script fills it with
-// COMPLETED / IDLE / PLAYED / BACKLOG as text. Chips or colours you add yourself stay (the script never touches them). A cell that holds your own formula is left alone.
+// COMPLETED / IDLE / ACTIVE / BACKLOG as text. Chips or colours you add yourself stay (the script never touches them). A cell that holds your own formula is left alone.
 
 const PLAY_STATUS_HEADERS = ['backlog status', 'play status', 'backlog'];
-const PLAY_STATES = ['BACKLOG', 'PLAYED', 'IDLE', 'COMPLETED'];
+const PLAY_STATES = ['BACKLOG', 'ACTIVE', 'IDLE', 'COMPLETED'];
 
 function playStatusOf_(unlocked, total, hours, lastPlayed, cutoff) {
   const u = Number(unlocked) || 0, t = Number(total) || 0, h = Number(hours) || 0;
@@ -1434,7 +1513,7 @@ function playStatusOf_(unlocked, total, hours, lastPlayed, cutoff) {
   if (h > 0 || u > 0) {                       // played (achievements count too: shared and retro games have no hours)
     const d = lastPlayed instanceof Date ? lastPlayed : (lastPlayed ? new Date(lastPlayed) : null);
     if (cutoff && d && !isNaN(d.getTime()) && d < cutoff) return 'IDLE';
-    return 'PLAYED';
+    return 'ACTIVE';
   }
   return 'BACKLOG';
 }
@@ -1473,7 +1552,7 @@ const COLOUR_NAMES = { red: '#f4c7c3', green: '#b7e1cd', blue: '#c9daf8', yellow
   pink: '#ead1dc', teal: '#d0e0e3', grey: '#e6e6e6', gray: '#e6e6e6', white: '#ffffff' };
 
 function statusRulesOf_(rules, col1) {
-  const words = PLAY_STATES.map(x => x.toUpperCase());
+  const words = PLAY_STATES.map(x => x.toUpperCase()).concat(['PLAYED']);   // PLAYED: rules from before the rename
   return rules.filter(r => {
     try {
       const bc = r.getBooleanCondition();
@@ -1557,7 +1636,7 @@ function setStatusColour_(word) {
   alert_(word + ' is now ' + (hex || 'uncoloured') + '.' + (cfg_().statusColours ? '' : ' Turn on "Colour the status cells" to see it.'));
 }
 function statusColour_COMPLETED() { setStatusColour_('COMPLETED'); }
-function statusColour_PLAYED() { setStatusColour_('PLAYED'); }
+function statusColour_ACTIVE() { setStatusColour_('ACTIVE'); }
 function statusColour_IDLE() { setStatusColour_('IDLE'); }
 function statusColour_BACKLOG() { setStatusColour_('BACKLOG'); }
 
@@ -1620,6 +1699,8 @@ function raUrl_(endpoint, params) {
   Object.keys(params || {}).forEach(k => q.push(k + '=' + encodeURIComponent(params[k])));
   return RA_BASE + endpoint + '?' + q.join('&');
 }
+function raImage_(path) { return path ? 'https://media.retroachievements.org' + path : ''; }
+
 function raUser_() { return PropertiesService.getScriptProperties().getProperty('RA_USER') || ''; }
 
 function parseRaDate_(s) {
@@ -2088,6 +2169,7 @@ function updateRetro_(force) {
         unlocked: out.unlocked[i][0],
         total: out.total[i][0],
         hardcore: out.hardcore ? out.hardcore[i][0] : hc,
+        cover: raImage_(e ? e.ImageIcon : (inf && inf.ImageIcon)),
         newAch: newAch,
         defer: defer,
         lastTs: lastDate ? Math.floor(lastDate.getTime() / 1000) : 0
