@@ -15,7 +15,7 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 - **Fast:** requests go out in parallel and games are only re-checked when something changed.
 - **Auto-update:** every 1 to 30 minutes, set from the menu.
 - **Discord posts** (all optional): last played with the names and descriptions of new achievements, 🏆 100% completions, and a 📅 weekly summary.
-- **Backlog status:** an optional column (COMPLETED, IDLE, PLAYED, BACKLOG) filled in automatically.
+- **Backlog status:** an optional column (COMPLETED, IDLE, ACTIVE, BACKLOG) filled in automatically.
 - **Sorting:** A to Z, Z to A, completion %, hours, last played, genre, backlog status, date completed.
 - **RetroAchievements:** an optional second tab, including games you haven't played yet.
 - **Self-setting-up:** on a blank sheet it builds the headers, formulas, colours and totals row. New rows get their formulas copied down, and **Add game rows** extends the list.
@@ -89,7 +89,7 @@ Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to e
 |---|---|
 | **Update now**, **Update + post last played to Discord**, **Post weekly summary now (preview)** | The everyday actions. |
 | **Sort the list** | The sort options and the sort range. |
-| **Tools** | Diagnose selected game, Add game rows, Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
+| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
 | **Settings → Accounts** | Steam API key and ID, RetroAchievements username and key, Discord webhook. |
 | **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked. |
 | **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. |
@@ -120,7 +120,7 @@ On every update the script writes text into the column:
 |---|---|
 | **COMPLETED** | Every achievement is unlocked. |
 | **IDLE** | You have played it (hours or achievements) but not for the set number of months. |
-| **PLAYED** | You have played it more recently than that. |
+| **ACTIVE** | You have played it more recently than that. |
 | **BACKLOG** | No hours and no achievements yet. |
 
 - **Settings → Backlog status → Mark IDLE after N months** sets the cutoff (default 6; 0 turns IDLE off).
@@ -131,7 +131,7 @@ On every update the script writes text into the column:
 
 ### Colours (optional)
 
-**Settings → Backlog status → Colour the status cells** lets the script colour the cells (off by default). Click **COMPLETED**, **PLAYED**, **IDLE** or **BACKLOG** to change a colour. Type a hex code such as `#b7e1cd`, a name (red, green, blue, yellow, orange, purple, pink, teal, grey, white), or `none`. **Reset to the default colours** puts them back.
+**Settings → Backlog status → Colour the status cells** lets the script colour the cells (off by default). Click **COMPLETED**, **ACTIVE**, **IDLE** or **BACKLOG** to change a colour. The defaults are COMPLETED `#d9d2e9` (lavender), ACTIVE `#d9ead3` (green), IDLE `#ffe599` (yellow) and BACKLOG `#f4cccc` (red). Type a hex code such as `#d9ead3`, a name (red, green, blue, yellow, orange, purple, pink, teal, grey, white), or `none`. **Reset to the default colours** puts them back.
 
 The colours use conditional formatting, and the script manages only the four rules for the status column. When colours are on, any colour rules of your own for those four words in that column are replaced. Turning colours off removes the script's rules.
 
@@ -154,7 +154,7 @@ The script never removes chips, dropdowns or colours you add yourself, and **Add
 
 - A to Z and Z to A.
 - Completion % (highest or lowest first), hours played (most first), last played (newest first), genre.
-- **Backlog status, then A to Z:** groups the list in the order BACKLOG, PLAYED, IDLE, COMPLETED, each group A to Z. Rows with no status go last. Needs the BACKLOG STATUS column.
+- **Backlog status, then A to Z:** groups the list in the order BACKLOG, ACTIVE, IDLE, COMPLETED, each group A to Z. Rows with no status go last. Needs the BACKLOG STATUS column.
 - **Date completed (newest or oldest first):** needs the DATE COMPLETED column. Games without a date go last.
 
 Sorting only reorders the game table, so lists next to it and the totals row are never moved. Rows without data go last. **Sort range** limits the sort to columns you choose, for example `A:L`. Use these instead of Google Sheets' own sort or filter, which reorders the whole sheet and breaks things.
@@ -191,11 +191,15 @@ You can also run **Tools → Set up RetroAchievements tab** at any time, before 
 
 The RetroAchievements tab carries over Discord posts (last played, 100% completion which says *Mastered in hardcore* when it applies), the weekly summary, sorting, update rules and totals. It has no store links, AppID, hours or STATUS column.
 
+## Test the 100% post
+
+**Tools → Send test 100% post to Discord** sends a sample 100% post so you can see the cover and layout. It uses a finished game from your sheet (one per tab if both tabs have one), or an example game if nothing is finished yet. The title is marked **TEST**, and nothing is recorded, so real posts and the weekly summary are not affected. If Discord rejects it, the script tells you to set the webhook again.
+
 ## Discord posts
 
 - **Last played:** after a game's hours change, it posts the game, total hours, achievements, and the number gained since the last post for that game.
 - **New achievements:** the post lists each achievement you earned, with its name and description, as a list when there are several (up to 10 shown, then "…and N more"). It works for Steam and RetroAchievements. Achievements you earned before the script first saw the game are not listed, and hidden Steam achievements may have no description. If an update catches several games at once, each game's achievements are held and listed in that game's next post.
-- **100% complete:** a post when a game reaches every achievement, with the final achievements you earned listed. Games already at 100% when you first set it up are not announced.
+- **100% complete:** a post when a game reaches every achievement, with the game's cover image (Steam's header image, or the game icon for RetroAchievements) and the final achievements you earned listed. Games already at 100% when you first set it up are not announced.
 - **Weekly summary:** hours played, achievements gained, top games, anything completed that week, and your sheet-wide totals. It only counts the games on your sheet, and games you add mid-week count from the day you add them. It needs auto-update on.
 
 ## How it works
@@ -223,7 +227,7 @@ The STATUS column holds a short label. **Hover over the cell** for a note explai
 | `Not owned` | The game wasn't found in your library or on the Steam store under that name, so it is treated as not owned. Fix the spelling, or type the AppID into APPID if you do have access to it. |
 | `No achievements` | Steam says the game has none. Any numbers already on the sheet are kept. |
 | `No stats` | Steam returned no stats for a game you have played. Your existing numbers are kept. |
-| `Private` | Set **Profile** and **Game details** to Public in Steam's privacy settings. |
+| `Not owned or private` | Steam returned no data for the game: either you don't have it, or your Steam **Profile** and **Game details** are private. If you own it, set both to Public in Steam's privacy settings. |
 | `Retrying` | Steam was busy or returned an error (the note shows the code). It retries on the next update. HTTP 403 usually means a wrong API key: enter it again under **Accounts**. |
 
 **Other problems**
@@ -249,3 +253,7 @@ Google Apps Script has daily quotas. A normal list updates well within them, but
 ## Updating
 
 Replace the code in **Extensions → Apps Script** with the newer `SteamTracker.gs`, save, and reload the sheet. Your settings and saved details are kept. See `CHANGELOG.md` for what changed.
+
+## License
+
+Add the license of your choice here, for example MIT.
