@@ -17,7 +17,8 @@ const DEFAULTS = {
   raSheetName: 'RetroAchievements',
   statusColours: false,  // BACKLOG STATUS column: colour the cells (conditional formatting managed by the script)
   statusColourMap: { COMPLETED: '#d9d2e9', ACTIVE: '#d9ead3', IDLE: '#ffe599', BACKLOG: '#f4cccc' },
-  idleMonths: 6,         // BACKLOG STATUS column: a played game not played for this many months becomes IDLE (0 = never)
+  idleAmount: 6,         // BACKLOG STATUS column: a played game not played for this long becomes IDLE (0 = never)
+  idleUnit: 'months',    // 'days', 'weeks' or 'months'
   gameRows: 250,         // game rows created on a new blank sheet (use Add game rows to grow it later)
   sortRange: '',         // columns the Sort options move, e.g. 'A:L'. Empty = automatic (GAME LIST through the last tracker column)
   // Cell update rules: true = keep my edits (the script only fills blank cells), false = the script overwrites.
@@ -36,6 +37,7 @@ const STATUS_HEADER = 'STATUS';
 const STATUS_NOTE = 'Steam Tracker: ';
 const GENRE_HEADER = 'GENRE';
 const STALE_HOURS = 24;            // every game's achievements are re-fetched at least this often, even if nothing seems to have changed
+const GENRE_RETRY_DAYS = 7;        // a genre the source didn't have is asked for again after this many days
 const GENRE_TIME_BUDGET_SEC = 200; // max time per run spent on genre lookups; the rest continues next run
 
 // Layout created on a blank sheet (and by Steam Tracker > Set up blank sheet).
@@ -60,6 +62,7 @@ function cfg_() {
     const raw = PropertiesService.getScriptProperties().getProperty('SETTINGS');
     const c = Object.assign({}, DEFAULTS, raw ? JSON.parse(raw) : {});
     c.keep = Object.assign({}, DEFAULTS.keep, c.keep || {});
+    if (c.idleMonths !== undefined && !(raw && JSON.parse(raw).idleAmount !== undefined)) { c.idleAmount = c.idleMonths; c.idleUnit = 'months'; }   // setting from earlier versions
     const saved = Object.assign({}, c.statusColourMap || {});
     if (saved.PLAYED !== undefined) { if (saved.ACTIVE === undefined) saved.ACTIVE = saved.PLAYED; delete saved.PLAYED; }   // PLAYED was renamed ACTIVE
     // Colours still at the old defaults move to the new defaults; colours you chose yourself are kept.
@@ -77,6 +80,22 @@ function setCfg_(patch) {
   let saved = {};
   try { saved = JSON.parse(props.getProperty('SETTINGS') || '{}'); } catch (e) { /* start fresh */ }
   props.setProperty('SETTINGS', JSON.stringify(Object.assign(saved, patch)));
+}
+
+// IDLE threshold helpers: "6 months", "3 weeks", "10 days" (0 = never).
+function idleLabel_(c) {
+  if (!(c.idleAmount > 0)) return 'never';
+  const u = c.idleUnit === 'days' ? 'day' : c.idleUnit === 'weeks' ? 'week' : 'month';
+  return c.idleAmount + ' ' + u + (c.idleAmount === 1 ? '' : 's');
+}
+
+function idleCutoff_(c) {
+  if (!(c.idleAmount > 0)) return null;
+  const d = new Date();
+  if (c.idleUnit === 'days') d.setDate(d.getDate() - c.idleAmount);
+  else if (c.idleUnit === 'weeks') d.setDate(d.getDate() - 7 * c.idleAmount);
+  else d.setMonth(d.getMonth() - c.idleAmount);
+  return d;
 }
 
 function autoUpdateOn_() {
@@ -114,6 +133,8 @@ function buildMenu_() {
     .addItem('Diagnose selected game', 'diagnoseGame')
     .addItem('Send test 100% post to Discord', 'sendTestCompletion')
     .addItem('Add game rows\u2026', 'addGameRows')
+    .addItem('Add totals row under the header', 'addTopTotals')
+    .addItem('Import library games with achievements\u2026', 'importLibrary')
     .addSeparator()
     .addItem('Add BACKLOG STATUS column', 'addPlayStatusColumn')
     .addItem('Add DATE COMPLETED column', 'addDateCompletedColumn')
@@ -142,7 +163,7 @@ function buildMenu_() {
     .addItem('Status column (Steam): ' + onOff(c.statusColumn), 'toggleStatus');
 
   const backlog = ui.createMenu('Backlog status')
-    .addItem('Mark IDLE after ' + (c.idleMonths ? c.idleMonths + ' months' : 'never') + ' (change)', 'settingIdleMonths')
+    .addItem('Mark IDLE after ' + idleLabel_(c) + ' (change)', 'settingIdleMonths')
     .addSeparator()
     .addItem('Colour the status cells: ' + onOff(c.statusColours), 'toggleStatusColours');
   PLAY_STATES.forEach(w => backlog.addItem(w + ' colour: ' + (c.statusColourMap[w] || 'none') + ' (change)', 'statusColour_' + w));
@@ -207,7 +228,37 @@ function toggle_(key, label) {
   buildMenu_();
   alert_(label + ' is now ' + (now ? 'ON' : 'OFF') + '.');
 }
-function toggleLinkNames() { toggle_('linkNames', 'Linking game names'); }
+function toggleLinkNames() {
+  const wasOn = cfg_().linkNames;
+  setCfg_({ linkNames: !wasOn });
+  buildMenu_();
+  if (!wasOn) { alert_('Linking game names is now ON. The links are added on the next update.'); return; }
+  const cleared = withLock_(removeNameLinks_);
+  alert_('Linking game names is now OFF. ' + (cleared ? 'Removed the Steam links from ' + cleared + ' game names and reset their text formatting.' : 'There were no Steam links to remove.'));
+}
+
+// Removes the store links the script added to the game names (links you added yourself, to other sites, are left alone)
+// and resets the text style of those cells, so the names look like plain text again.
+function removeNameLinks_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(cfg_().sheetName) || ss.getSheets()[0];
+  const headers = headersOf_(sheet);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) return 0;
+  const n = trimGameRows_(sheet, nameIdx);
+  if (n < 1) return 0;
+  const rng = sheet.getRange(topRow_(sheet), nameIdx + 1, n, 1);
+  let cleared = 0;
+  const out = rng.getRichTextValues().map(r => {
+    const v = r[0];
+    const ours = v.getRuns().some(run => /^https:\/\/store\.steampowered\.com\/app\//.test(run.getLinkUrl() || ''));
+    if (!ours) return [v];
+    cleared++;
+    return [SpreadsheetApp.newRichTextValue().setText(v.getText()).build()];
+  });
+  if (cleared) rng.setRichTextValues(out);
+  return cleared;
+}
 function toggleGenre() { toggle_('genreColumn', 'The GENRE column'); }
 function toggleStatus() { toggle_('statusColumn', 'The STATUS column'); }
 function toggleLastPlayed() { toggle_('postLastPlayed', 'Last-played posts'); }
@@ -259,14 +310,20 @@ function settingRecentHours() {
 }
 
 function settingIdleMonths() {
-  const v = ask_('Mark games IDLE', 'In the BACKLOG STATUS column, a game you have played but not played for this many months becomes IDLE ' +
-    '(0 = never use IDLE, 1-120, currently ' + cfg_().idleMonths + '):');
+  const c = cfg_();
+  const v = ask_('Mark games IDLE', 'In the BACKLOG STATUS column, a game you have played but not played for this long becomes IDLE.\n' +
+    'Type a number and a unit, for example: 30 days, 3 weeks or 6 months. A number alone keeps the current unit (' + c.idleUnit + ').\n' +
+    '0 = never use IDLE. Currently: ' + idleLabel_(c) + '.');
   if (v === null) return;
-  const n = Number(v);
-  if (!(n >= 0 && n <= 120) || String(v).trim() === '') { alert_('Please enter a whole number from 0 to 120. Nothing was changed.'); return; }
-  setCfg_({ idleMonths: Math.round(n) });
+  const m = String(v).trim().toLowerCase().match(/^(\d+)\s*(d|day|days|w|wk|wks|week|weeks|m|mo|mos|month|months)?$/);
+  if (!m) { alert_('Please type a whole number with an optional unit (days, weeks or months), such as 45 days. Nothing was changed.'); return; }
+  const unit = !m[2] ? c.idleUnit : m[2][0] === 'd' ? 'days' : m[2][0] === 'w' ? 'weeks' : 'months';
+  const n = Number(m[1]);
+  const max = { days: 3650, weeks: 520, months: 120 }[unit];
+  if (n > max) { alert_('The most is ' + max + ' ' + unit + '. Nothing was changed.'); return; }
+  setCfg_({ idleAmount: n, idleUnit: unit });
   buildMenu_();
-  alert_(Math.round(n) ? 'Saved. Games you have played but not for ' + Math.round(n) + ' months will show IDLE on the next update.' : 'Saved. IDLE will not be used.');
+  alert_(n ? 'Saved. Games you have played but not for ' + idleLabel_(cfg_()) + ' will show IDLE on the next update.' : 'Saved. IDLE will not be used.');
 }
 
 function settingWeeklyTime() {
@@ -295,7 +352,7 @@ function showSettings() {
     'Cells the script overwrites: ' + (RULE_COLS.filter(r => !c.keep[r[0]]).map(r => r[1]).join(', ') || 'none') +
       '\nCells where your edits are kept: ' + (RULE_COLS.filter(r => c.keep[r[0]]).map(r => r[1]).join(', ') || 'none'),
     'Auto-update: ' + (autoUpdateOn_() ? 'ON, every ' + c.autoMinutes + ' min' : 'OFF (would run every ' + c.autoMinutes + ' min)'),
-    'BACKLOG STATUS colours: ' + (c.statusColours ? 'ON (' + PLAY_STATES.map(w => w + ' ' + (c.statusColourMap[w] || 'none')).join(', ') + ')' : 'OFF') + '\nBACKLOG STATUS column: IDLE after ' + (c.idleMonths ? c.idleMonths + ' months' : 'never'),
+    'BACKLOG STATUS colours: ' + (c.statusColours ? 'ON (' + PLAY_STATES.map(w => w + ' ' + (c.statusColourMap[w] || 'none')).join(', ') + ')' : 'OFF') + '\nBACKLOG STATUS column: IDLE after ' + idleLabel_(c),
     'Re-check games played in last ' + c.recentHours + ' h',
     'Link game names: ' + onOff(c.linkNames),
     'Genre column: ' + onOff(c.genreColumn),
@@ -386,6 +443,7 @@ function updateSteam_(force) {
   }
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
+  const top = topRow_(sheet);
   const tz = ss.getSpreadsheetTimeZone();
 
   // --- Find columns by header (nothing is created except the optional status column) ---
@@ -421,7 +479,7 @@ function updateSteam_(force) {
   }
 
   // Only the game rows in the name column (other columns like GAMES TO BUY can be longer).
-  const nameCol = sheet.getRange(2, nameIdx + 1, Math.max(sheet.getLastRow() - 1, 1), 1).getValues();
+  const nameCol = sheet.getRange(top, nameIdx + 1, Math.max(sheet.getLastRow() - top + 1, 1), 1).getValues();
   let numRows = nameCol.length;
   // A "TOTALS"-style label row ends the list, so its formulas are never read back or overwritten.
   const endIdx = nameCol.findIndex(r => /^(totals?|overall|summary)$/i.test(String(r[0]).trim()));
@@ -436,7 +494,7 @@ function updateSteam_(force) {
   const used = Object.keys(col).map(k => col[k]).filter(i => i >= 0).concat([nameIdx]);
   const minC = Math.min.apply(null, used);
   const maxC = Math.max.apply(null, used);
-  const data = sheet.getRange(2, minC + 1, numRows, maxC - minC + 1).getValues();
+  const data = sheet.getRange(top, minC + 1, numRows, maxC - minC + 1).getValues();
   const cell = (row, idx) => row[idx - minC];
 
   // --- Library + recently played, fetched in parallel ---
@@ -467,6 +525,7 @@ function updateSteam_(force) {
   const lastAch = loadJson_(props, 'LAST_ACH') || {}; // appid -> [unlocked, total] as last written by the script
   const lastUnlock = loadJson_(props, 'LAST_UNLOCK') || {}; // appid -> unix time of the newest unlock seen
   const freeMap = JSON.parse(props.getProperty('FREE_MAP') || '{}');
+  const dlcMap = JSON.parse(props.getProperty('DLC_MAP') || '{}'); // appid -> base game name if the app is DLC, else ''
   let freeMapChanged = false;
   const nowSec = Math.floor(Date.now() / 1000);
   const day = d => (d instanceof Date ? Utilities.formatDate(d, tz, 'yyyy-MM-dd') : '');
@@ -480,6 +539,7 @@ function updateSteam_(force) {
     let game = null;
     let shared = false;
     let free = false;
+    let dlc = '';
     let note = '';
     const existingId = Number(cell(row, col.appid));
     if (existingId && byId[existingId]) game = byId[existingId];
@@ -489,10 +549,12 @@ function updateSteam_(force) {
     if (!game) {
       // Not in your own library: free-to-play or Family Sharing. Find the AppID via the store.
       let appid = existingId || 0;
+      let hitType = '';
       if (!appid) {
         const hit = storeSearch_(title);
         if (hit) {
           appid = hit.id;
+          hitType = String(hit.type || '').toLowerCase();
           if (norm_(hit.name) !== norm_(title)) note = 'The Steam store matched "' + hit.name + '". If that is the wrong game, type the right AppID into APPID.';
         }
       }
@@ -505,8 +567,12 @@ function updateSteam_(force) {
       } else {
         game = recent[appid] || { appid: appid };
         shared = true;
-        if (freeMap[appid] === undefined) { freeMap[appid] = isFree_(appid) ? 1 : 0; freeMapChanged = true; }
+        if (freeMap[appid] === undefined || dlcMap[appid] === undefined) {
+          const meta = appMeta_(appid);
+          if (meta) { freeMap[appid] = meta.free ? 1 : 0; dlcMap[appid] = meta.dlc; freeMapChanged = true; }
+        }
         free = freeMap[appid] === 1;
+        dlc = dlcMap[appid] || (hitType === 'dlc' ? 'its base game' : '');
       }
     }
 
@@ -534,7 +600,7 @@ function updateSteam_(force) {
       (!keepRules.lastPlayed && gDay !== day(cell(row, col.lastPlayed))) ||
       playedRecently;
 
-    items.push({ i: i, title: title, game: game, shared: shared, free: free, note: note,
+    items.push({ i: i, title: title, game: game, shared: shared, free: free, dlc: dlc, note: note,
                  hoursNow: hoursNow, need: need });
   });
 
@@ -588,7 +654,7 @@ function updateSteam_(force) {
   const genreOf = {};
   let genresLeft = 0;
   if (col.genre >= 0) {
-    const gblank = it => String(cell(data[it.i], col.genre)).trim() === '';
+    const gblank = it => { const g = String(cell(data[it.i], col.genre)).trim(); return g === '' || g === 'Unknown'; };
     // Only look up games that aren't cached yet and whose cell the script would actually write.
     const need = items.filter(it => !it.missing && genreCache[it.game.appid] === undefined &&
       (!keepRules.genre || gblank(it)));
@@ -619,7 +685,7 @@ function updateSteam_(force) {
   // --- Pass 3: fill the output columns ---
   const { out, orig, put } = outputSet_(data, col, Object.keys(col), cell, keepRules);
   // The cell holds a short label; the explanation goes into a note on the cell (hover to read it).
-  const statusNotes = out.status ? sheet.getRange(2, col.status + 1, numRows, 1).getNotes() : null;
+  const statusNotes = out.status ? sheet.getRange(top, col.status + 1, numRows, 1).getNotes() : null;
   const statusNotesOld = statusNotes ? statusNotes.map(n => n[0]) : null;
   const setStatus = (i, label, detail) => {
     if (!out.status) return;
@@ -646,8 +712,9 @@ function updateSteam_(force) {
     let ach = null;
     let newAch = [];
     if (it.need) {
-      const tag = (it.shared ? (it.free ? ' \u00b7 Free' : ' \u00b7 Shared') : '') + (it.note ? ' \u00b7 Check match' : '');
-      const why = (it.shared ? (it.free ? 'This game is free to play and counts as owned. Steam doesn\'t always report its playtime. ' : 'A game you don\'t own (Family Sharing); Steam doesn\'t report its playtime. ') : '') + it.note;
+      const tag = (it.dlc ? ' \u00b7 DLC' : it.shared ? (it.free ? ' \u00b7 Free' : ' \u00b7 Shared') : '') + (it.note ? ' \u00b7 Check match' : '');
+      const why = (it.dlc ? 'The Steam store lists this as DLC for ' + it.dlc + ', not a game of its own. Achievements for DLC are usually counted under the base game. ' :
+        it.shared ? (it.free ? 'This game is free to play and counts as owned. Steam doesn\'t always report its playtime. ' : 'A game you don\'t own (Family Sharing); Steam doesn\'t report its playtime. ') : '') + it.note;
       const r = it.ach;
       if (r.err) {
         // Steam hiccup: keep the old values and leave LAST UPDATED alone; it is retried on the next run.
@@ -692,11 +759,12 @@ function updateSteam_(force) {
 
   // --- Write back (only our columns; AMOUNT DONE / COMPLETED formulas and other lists are untouched) ---
   writeColumns_(sheet, col, out, numRows);
-  if (statusNotes && statusNotes.some((n, i) => n[0] !== statusNotesOld[i])) sheet.getRange(2, col.status + 1, numRows, 1).setNotes(statusNotes);
+  alignColumns_(sheet, headers, numRows);
+  if (statusNotes && statusNotes.some((n, i) => n[0] !== statusNotesOld[i])) sheet.getRange(top, col.status + 1, numRows, 1).setNotes(statusNotes);
 
   // --- Link each game name to its Steam store page (the name text itself is unchanged) ---
   if (cfg_().linkNames) {
-    const nameRange = sheet.getRange(2, nameIdx + 1, numRows, 1);
+    const nameRange = sheet.getRange(top, nameIdx + 1, numRows, 1);
     const rich = nameRange.getRichTextValues();
     let linksChanged = false;
     items.forEach(it => {
@@ -712,7 +780,7 @@ function updateSteam_(force) {
 
   applyPlayStatus_(sheet, headers, nameIdx, numRows);
 
-  if (freeMapChanged) props.setProperty('FREE_MAP', JSON.stringify(freeMap));
+  if (freeMapChanged) { props.setProperty('FREE_MAP', JSON.stringify(freeMap)); props.setProperty('DLC_MAP', JSON.stringify(dlcMap)); }
   saveJson_(props, 'LAST_ACH', lastAch);
   saveJson_(props, 'LAST_UNLOCK', lastUnlock);
   if (genresLeft > 0) alert_(genresLeft + ' genres are still blank (Steam store rate limit). Run Update now again in a few minutes.');
@@ -816,7 +884,7 @@ function sendTestCompletion() {
     const h = headersOf_(sheet);
     const ni = h.findIndex(x => NAME_HEADERS.indexOf(x) !== -1), ui = h.indexOf('collected achies'), ti = h.indexOf('total achies');
     if (ni === -1 || ui === -1 || ti === -1) return null;
-    const rows = sheet.getRange(2, 1, trimGameRows_(sheet, ni), sheet.getLastColumn()).getValues();
+    const rows = sheet.getRange(topRow_(sheet), 1, trimGameRows_(sheet, ni), sheet.getLastColumn()).getValues();
     const col = k => h.indexOf(k);
     let best = null, nDone = 0;
     rows.forEach(r => {
@@ -1071,7 +1139,7 @@ function diagnoseGame() {
     .map(h => String(h).trim().toLowerCase().replace(/\s+/g, ' '));
   const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
   const idIdx = headers.indexOf(OUT_COLS.appid.toLowerCase());
-  if (row < 2 || nameIdx === -1) { alert_('Click a cell in a game\'s row first (not the header row).'); return; }
+  if (row < topRow_(sheet) || nameIdx === -1) { alert_('Click a cell in a game\'s row first (not the header or totals row).'); return; }
 
   const name = String(sheet.getRange(row, nameIdx + 1).getValue()).trim();
   let appid = idIdx >= 0 ? Number(sheet.getRange(row, idIdx + 1).getValue()) : 0;
@@ -1133,6 +1201,7 @@ function rc_(from, to) { return from === to ? 'RC' : 'RC[' + (from - to) + ']'; 
 
 // Copies the AMOUNT DONE / PROGRESS / COMPLETED formulas into empty cells of game rows. Existing formulas and values are untouched.
 function fillFormulas_(sheet, headers, nameIdx, col, numRows) {
+  const top = topRow_(sheet);
   const amount = headers.indexOf('amount done');
   if (amount === -1) return;
   const progress = headers.indexOf('progress');
@@ -1153,7 +1222,7 @@ function fillFormulas_(sheet, headers, nameIdx, col, numRows) {
   }
 
   targets.forEach(t => {
-    const rng = sheet.getRange(2, t.idx + 1, numRows, 1);
+    const rng = sheet.getRange(top, t.idx + 1, numRows, 1);
     const f = rng.getFormulasR1C1();
     const v = rng.getValues();
     let last = null;
@@ -1169,7 +1238,7 @@ function fillFormulas_(sheet, headers, nameIdx, col, numRows) {
       const n = fl[1] - fl[0] + 1;
       const rows = [];
       for (let k = 0; k < n; k++) rows.push([fl[2]]);
-      sheet.getRange(2 + fl[0], t.idx + 1, n, 1).setFormulasR1C1(rows);
+      sheet.getRange(top + fl[0], t.idx + 1, n, 1).setFormulasR1C1(rows);
     });
   });
 }
@@ -1218,6 +1287,8 @@ function setupLayout_(sheet, layout) {
   if (has('DATE COMPLETED')) sheet.getRange(2, at('DATE COMPLETED'), rows.length, 1).setNumberFormat('yyyy-mm-dd');
   sheet.getRange(2, at('LAST UPDATED'), rows.length, 1).setNumberFormat('yyyy-mm-dd hh:mm');
 
+  alignColumns_(sheet, layout.map(h => h.toLowerCase()), rows.length + 1);   // the totals row too
+
   // COMPLETED colours
   const cr = sheet.getRange(2, at('COMPLETED'), rows.length, 1);
   sheet.setConditionalFormatRules(sheet.getConditionalFormatRules().concat([
@@ -1257,9 +1328,24 @@ function headersOf_(sheet) {
   return n < 1 ? [] : sheet.getRange(1, 1, 1, n).getValues()[0].map(h => String(h).trim().toLowerCase().replace(/\s+/g, ' '));
 }
 
+// First game row: 2, or 3 when a TOTALS row sits directly under the header (Tools > Add totals row under the header).
+function topRow_(sheet) {
+  try {
+    const n = sheet.getLastColumn();
+    if (n < 1) return 2;
+    const ni = headersOf_(sheet).findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+    if (ni === -1) return 2;
+    const r = sheet.getRange(2, 1, 1, n);
+    return /^totals?$/i.test(String(r.getValues()[0][ni]).trim()) && r.getFormulas()[0].some(f => f) ? 3 : 2;
+  } catch (e) {
+    return 2;
+  }
+}
+
 // Number of game rows: ends at the last filled name, or at a "TOTALS"-style label row.
 function trimGameRows_(sheet, nameIdx) {
-  const nameCol = sheet.getRange(2, nameIdx + 1, Math.max(sheet.getLastRow() - 1, 1), 1).getValues();
+  const top = topRow_(sheet);
+  const nameCol = sheet.getRange(top, nameIdx + 1, Math.max(sheet.getLastRow() - top + 1, 1), 1).getValues();
   let n = nameCol.length;
   const end = nameCol.findIndex(r => /^(totals?|overall|summary)$/i.test(String(r[0]).trim()));
   if (end !== -1) n = end;
@@ -1334,7 +1420,8 @@ function sortList_(kind) {
     const span = tableSpan_(headers);
     if (!span || nameIdx < span.min || nameIdx > span.max) { alert_('The sort range must include the GAME LIST column.'); return; }
 
-    const block = sheet.getRange(2, 1, numRows, sheet.getLastColumn()).getValues();
+    const top = topRow_(sheet);
+    const block = sheet.getRange(top, 1, numRows, sheet.getLastColumn()).getValues();
     const num = v => (typeof v === 'number' && !isNaN(v)) ? v : null;
     const cellOf = (r, h) => (H(h) >= 0 ? r[H(h)] : '');
     const rows = block.map((r, i) => {
@@ -1373,8 +1460,8 @@ function sortList_(kind) {
     sheet.insertColumnAfter(span.max + 1);
     const helper = span.max + 2;
     try {
-      sheet.getRange(2, helper, numRows, 1).setValues(rank);
-      sheet.getRange(2, span.min + 1, numRows, helper - span.min).sort({ column: helper, ascending: true });
+      sheet.getRange(top, helper, numRows, 1).setValues(rank);
+      sheet.getRange(top, span.min + 1, numRows, helper - span.min).sort({ column: helper, ascending: true });
     } finally {
       sheet.deleteColumn(helper);
     }
@@ -1404,6 +1491,17 @@ function addGameRows() {
   withLock_(() => alert_(extendRows_(sheet, n)));
 }
 
+// The totals row is the lowest row whose achievements column holds a =SUM(...). Returns its row number, or 0.
+function totalsRowOf_(sheet, headers) {
+  const lastRow = sheet.getLastRow();
+  const top = topRow_(sheet);
+  const sumIdx = ['collected achies', 'total achies', 'hardcore achies', 'hours played'].map(h => headers.indexOf(h)).filter(i => i >= 0)[0];
+  if (sumIdx === undefined || lastRow < top + 1) return 0;
+  const f = sheet.getRange(top, sumIdx + 1, lastRow - top + 1, 1).getFormulas();
+  for (let r = f.length - 1; r >= 0; r--) { if (/^=SUM\(/i.test(f[r][0])) return r + top; }
+  return 0;
+}
+
 // Makes room for n more games above the totals row (formulas, formats and totals ranges grow with it).
 function extendRows_(sheet, n) {
   const headers = headersOf_(sheet);
@@ -1413,16 +1511,11 @@ function extendRows_(sheet, n) {
   const span = tableSpan_(headers);
   const lastRow = sheet.getLastRow();
 
-  // The totals row is the lowest row whose achievements column holds a =SUM(...).
-  let totalsRow = 0;
-  const sumIdx = ['collected achies', 'total achies', 'hardcore achies', 'hours played'].map(H).filter(i => i >= 0)[0];
-  if (sumIdx !== undefined && lastRow >= 3) {
-    const f = sheet.getRange(2, sumIdx + 1, lastRow - 1, 1).getFormulas();
-    for (let r = f.length - 1; r >= 0; r--) { if (/^=SUM\(/i.test(f[r][0])) { totalsRow = r + 2; break; } }
-  }
+  const totalsRow = totalsRowOf_(sheet, headers);
+  const top = topRow_(sheet);
 
   let first, src;
-  if (totalsRow >= 4) {
+  if (totalsRow >= top + 2) {
     first = totalsRow - 1;                     // insert inside the totals' ranges so they grow too
     src = totalsRow - 2;
     sheet.insertRowsBefore(first, n);
@@ -1453,16 +1546,16 @@ function extendRows_(sheet, n) {
 
   // Point every range in the totals row at the new last game row (this also fixes totals that stopped short).
   let lastGame = first + n - 1;
-  if (totalsRow >= 4) {
+  if (totalsRow >= top + 2) {
     const newTotals = totalsRow + n;
     lastGame = newTotals - 1;
     const width = sheet.getLastColumn();
     const rng = sheet.getRange(newTotals, 1, 1, width);
     const f = rng.getFormulas()[0];
-    const fixed = f.map(x => x ? x.replace(/\$?([A-Z]{1,3})\$?2:\$?([A-Z]{1,3})\$?\d+/g, (m, a, b) => a + '2:' + b + lastGame) : x);
+    const fixed = f.map(x => x ? x.replace(new RegExp('\\$?([A-Z]{1,3})\\$?' + top + ':\\$?([A-Z]{1,3})\\$?\\d+', 'g'), (m, a, b) => a + top + ':' + b + lastGame) : x);
     if (fixed.some((x, i) => x !== f[i])) rng.setFormulas([fixed]);
   }
-  return 'Added ' + n + ' rows to "' + sheet.getName() + '". Game rows now run from row 2 to row ' + lastGame + '.';
+  return 'Added ' + n + ' rows to "' + sheet.getName() + '". Game rows now run from row ' + top + ' to row ' + lastGame + '.';
 }
 
 function settingGameRows() {
@@ -1474,6 +1567,161 @@ function settingGameRows() {
   setCfg_({ gameRows: n });
   buildMenu_();
   alert_('New blank sheets will get ' + n + ' game rows.');
+}
+
+// ---------- totals row under the header ----------
+// Inserts a TOTALS row directly under the header that mirrors the totals row at the bottom, so the totals are always in view.
+// Rows below move down by one; the script finds the first game row by looking for this row.
+
+function addTopTotals() {
+  const sheet = targetSheet_();
+  const r = withLock_(() => addTopTotals_(sheet));
+  if (r) alert_(r);
+}
+
+function addTopTotals_(sheet) {
+  const headers = headersOf_(sheet);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  if (nameIdx === -1) return 'Could not find a GAME LIST column in row 1 of "' + sheet.getName() + '".';
+  if (topRow_(sheet) === 3) return '"' + sheet.getName() + '" already has a totals row under the header.';
+  const tr = totalsRowOf_(sheet, headers);
+  if (!tr) return 'There is no totals row at the bottom of "' + sheet.getName() + '" to mirror. Add one first (a row with =SUM formulas under your games), or run Tools > Set up blank sheet on a new tab.';
+  const width = sheet.getLastColumn();
+  const bottom = sheet.getRange(tr, 1, 1, width);
+  const bf = bottom.getFormulas()[0], bv = bottom.getValues()[0];
+  const L = i => colLetter_(i);
+
+  sheet.insertRowsAfter(1, 1);                                   // the new row 2 (the bottom totals row is now at tr + 1)
+  const row = sheet.getRange(2, 1, 1, width);
+  sheet.getRange(tr + 1, 1, 1, width).copyTo(row, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  const progress = headers.indexOf('progress'), amount = headers.indexOf('amount done');
+  const f = [];
+  for (let i = 0; i < width; i++) {
+    if (i === nameIdx) f.push('TOTALS');
+    else if (i === progress && amount >= 0) f.push('=IF(' + L(amount) + '2="","",SPARKLINE(MIN(' + L(amount) + '2,1),{"charttype","bar";"max",1;"color1","#34a853"}))');
+    else if (bf[i] || (bv[i] !== '' && bv[i] !== null)) f.push('=' + L(i) + (tr + 1));
+    else f.push('');
+  }
+  row.setValues([f.map(x => (x.charAt(0) === '=' ? '' : x))]);
+  row.setFormulas([f]);                                          // formulas as formulas, the label as text
+  row.setFontWeight('bold');
+  sheet.getRange(2, nameIdx + 1).setValue('TOTALS');
+  sheet.setFrozenRows(2);
+  return 'Added a TOTALS row under the header of "' + sheet.getName() + '" (frozen, so it stays in view). It shows the totals from the row at the bottom. Your games now start on row 3.';
+}
+
+// ---------- import library ----------
+// Manual button: adds every game in your Steam library that has achievements and isn't on the sheet yet.
+const IMPORT_BUDGET_SEC = 240;
+
+function importLibrary() {
+  const ui = SpreadsheetApp.getUi();
+  const answer = ui.alert('Import library games with achievements',
+    'This adds every game in your Steam library that has achievements (games without achievements are ignored) and is not on the sheet yet.\n\n' +
+    'WARNING: this can take a long time on a big library, because Steam is asked about every game. If it runs out of time it saves its progress; ' +
+    'run it again to carry on.\n\nYour Steam profile and Game details must be Public. Continue?', ui.ButtonSet.OK_CANCEL);
+  if (answer !== ui.Button.OK) return;
+  const r = withLock_(importLibrary_);
+  if (!r) return;
+  alert_(r.msg);
+  if (r.added > 0) run_(false, false);     // fill in hours, achievements and genres for the new rows
+}
+
+function importLibrary_() {
+  const props = PropertiesService.getScriptProperties();
+  const key = props.getProperty('STEAM_API_KEY');
+  let steamId = props.getProperty('STEAM_ID');
+  if (!key || !steamId) return { msg: 'Run Steam Tracker > Settings > Accounts > Steam API key & Steam ID first.', added: 0 };
+  if (!/^\d{17}$/.test(steamId)) { steamId = resolveVanity_(key, steamId); props.setProperty('STEAM_ID', steamId); }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(cfg_().sheetName) || ss.getSheets()[0];
+  if (isBlankSheet_(sheet)) return { msg: 'The "' + sheet.getName() + '" tab is blank. Run Tools > Set up blank sheet first, then import.', added: 0 };
+  const headers = headersOf_(sheet);
+  const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
+  const idIdx = headers.indexOf('appid');
+  if (nameIdx === -1 || idIdx === -1) return { msg: 'The tab needs a GAME LIST column and an APPID column in row 1.', added: 0 };
+
+  const res = UrlFetchApp.fetch('https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=' + key + '&steamid=' + steamId +
+    '&include_appinfo=1&include_played_free_games=1&format=json', { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('Steam API error ' + res.getResponseCode() + ' (check your API key).');
+  const games = (JSON.parse(res.getContentText()).response || {}).games || [];
+  if (!games.length) throw new Error('Steam returned no games. Make sure your profile and "Game details" are set to Public.');
+
+  // Games already on the sheet (by AppID or by name).
+  const have = trimGameRows_(sheet, nameIdx);
+  const haveNames = {}, haveIds = {};
+  if (have > 0) {
+    sheet.getRange(topRow_(sheet), nameIdx + 1, have, 1).getValues().forEach(r => { if (String(r[0]).trim()) haveNames[norm_(r[0])] = 1; });
+    sheet.getRange(topRow_(sheet), idIdx + 1, have, 1).getValues().forEach(r => { if (Number(r[0])) haveIds[Number(r[0])] = 1; });
+  }
+  const candidates = games.filter(g => g.name && !haveIds[g.appid] && !haveNames[norm_(g.name)]);
+
+  // Which of them have achievements (remembered, so an interrupted import carries on where it stopped).
+  const known = loadJson_(props, 'IMPORT_CHECK') || {};
+  const unknown = candidates.filter(g => known[g.appid] === undefined);
+  const started = Date.now();
+  let s = 0;
+  while (s < unknown.length && Date.now() - started < IMPORT_BUDGET_SEC * 1000) {
+    const batch = unknown.slice(s, s + 30);
+    let resps = UrlFetchApp.fetchAll(batch.map(g => ({
+      url: 'https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?gameid=' + g.appid + '&format=json',
+      muteHttpExceptions: true })));
+    if (resps.some(r => r.getResponseCode() === 429)) { Utilities.sleep(20000); continue; }   // rate limited: wait, redo the batch
+    batch.forEach((g, n) => {
+      const code = resps[n].getResponseCode();
+      if (code === 200) {
+        let total = 0;
+        try { total = (JSON.parse(resps[n].getContentText()).achievementpercentages.achievements || []).length; } catch (e) { /* none */ }
+        known[g.appid] = total;
+      } else if (code === 400 || code === 403 || code === 404) known[g.appid] = 0;   // no achievement list
+      // anything else is a hiccup: left unknown, checked again next time
+    });
+    s += 30;
+    Utilities.sleep(300);
+  }
+  saveJson_(props, 'IMPORT_CHECK', known);
+  const stillUnknown = candidates.filter(g => known[g.appid] === undefined).length;
+  const toAdd = candidates.filter(g => known[g.appid] > 0)
+    .sort((a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0);
+
+  let added = 0;
+  if (toAdd.length) {
+    const slots = () => {
+      const top = topRow_(sheet);
+      const col = sheet.getRange(top, nameIdx + 1, Math.max(sheet.getLastRow() - top + 1, 1), 1).getValues();
+      let end = col.findIndex(r => /^(totals?|overall|summary)$/i.test(String(r[0]).trim()));
+      const tr = totalsRowOf_(sheet, headers);                       // the totals row (it may have no label)
+      if (tr >= top + 1 && (end === -1 || tr - top < end)) end = tr - top;
+      const limit = end === -1 ? col.length : end;
+      const free = [];
+      for (let i = 0; i < limit; i++) if (String(col[i][0]).trim() === '') free.push(i);
+      if (end === -1) for (let i = limit; free.length < toAdd.length; i++) free.push(i);   // below the list
+      return free;
+    };
+    let free = slots();
+    if (free.length < toAdd.length) {                     // a totals row sits below the list: make room above it first
+      extendRows_(sheet, toAdd.length - free.length);
+      free = slots();
+    }
+    const list = toAdd.slice(0, free.length);
+    const top = topRow_(sheet);
+    if (list.length && sheet.getMaxRows() < top + free[list.length - 1]) sheet.insertRowsAfter(sheet.getMaxRows(), top + free[list.length - 1] - sheet.getMaxRows());
+    // write in runs of consecutive rows
+    let a = 0;
+    while (a < list.length) {
+      let b = a;
+      while (b + 1 < list.length && free[b + 1] === free[b] + 1) b++;
+      sheet.getRange(top + free[a], nameIdx + 1, b - a + 1, 1).setValues(list.slice(a, b + 1).map(g => [g.name]));
+      sheet.getRange(top + free[a], idIdx + 1, b - a + 1, 1).setValues(list.slice(a, b + 1).map(g => [g.appid]));
+      a = b + 1;
+    }
+    added = list.length;
+  }
+  const skipped = candidates.length - toAdd.length - stillUnknown;
+  return { added: added, msg: 'Checked ' + candidates.length + ' games that were not on the sheet.\nAdded ' + added + ' with achievements; ' +
+    skipped + ' had no achievements and were ignored.' +
+    (stillUnknown ? '\n\n' + stillUnknown + ' games could not be checked yet (time limit or Steam busy). Run Import library games again to carry on.' : '') +
+    (added ? '\n\nNow fetching their hours, achievements and genres.' : '') };
 }
 
 // ---------- cell update rules ----------
@@ -1522,16 +1770,16 @@ function applyPlayStatus_(sheet, headers, nameIdx, numRows) {
   const si = headers.findIndex(h => PLAY_STATUS_HEADERS.indexOf(h) !== -1);
   if (si === -1 || numRows < 1) return;
   const c = cfg_();
-  const read = h => { const i = headers.indexOf(h); return i < 0 ? null : sheet.getRange(2, i + 1, numRows, 1).getValues(); };
-  const names = sheet.getRange(2, nameIdx + 1, numRows, 1).getValues();
+  const top = topRow_(sheet);
+  const read = h => { const i = headers.indexOf(h); return i < 0 ? null : sheet.getRange(top, i + 1, numRows, 1).getValues(); };
+  const names = sheet.getRange(top, nameIdx + 1, numRows, 1).getValues();
   const unl = read('collected achies'), tot = read('total achies'), hrs = read('hours played'), lp = read('last played');
-  const rng = sheet.getRange(2, si + 1, numRows, 1);
+  const rng = sheet.getRange(top, si + 1, numRows, 1);
   const old = rng.getValues(), form = rng.getFormulas();
   if (/^=ARRAYFORMULA\(/i.test(form[0][0]) && /BACKLOG/i.test(form[0][0])) {       // the formula an earlier version installed
-    sheet.getRange(2, si + 1).clearContent(); form[0][0] = ''; old[0][0] = '';
+    sheet.getRange(top, si + 1).clearContent(); form[0][0] = ''; old[0][0] = '';
   }
-  let cutoff = null;
-  if (c.idleMonths > 0) { cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - c.idleMonths); }
+  const cutoff = idleCutoff_(c);
   const out = old.map((o, i) => {
     if (form[i][0]) return [form[i][0]];                                            // your own formula: untouched
     if (c.keep.playStatus && String(o[0]).trim() !== '') return [o[0]];             // "keep my edits"
@@ -1574,7 +1822,8 @@ function syncStatusColours_(sheet, si, numRows) {
         String(bc.getBackground()).toLowerCase() === c.statusColourMap[w].toLowerCase(); } catch (e) { return false; }
     }));
     if (same) return;
-    const area = sheet.getRange(2, si + 1, Math.max(sheet.getMaxRows() - 1, numRows), 1);
+    const top = topRow_(sheet);
+    const area = sheet.getRange(top, si + 1, Math.max(sheet.getMaxRows() - top + 1, numRows), 1);
     const rest = all.filter(r => mine.indexOf(r) === -1);
     sheet.setConditionalFormatRules(rest.concat(want.map(w =>
       SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(w).setBackground(c.statusColourMap[w]).setRanges([area]).build())));
@@ -1658,8 +1907,9 @@ function addDateCompletedColumn() {
   sheet.getRange(1, upd + 2).copyTo(sheet.getRange(1, upd + 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
   sheet.getRange(1, upd + 1).setValue('DATE COMPLETED');
   sheet.setColumnWidth(upd + 1, 120);
-  const rows = Math.max(sheet.getMaxRows() - 1, 1);
-  sheet.getRange(2, upd + 1, rows, 1).setNumberFormat('yyyy-mm-dd');
+  const top = topRow_(sheet);
+  const rows = Math.max(sheet.getMaxRows() - top + 1, 1);
+  sheet.getRange(top, upd + 1, rows, 1).setNumberFormat('yyyy-mm-dd');
   updateSteamSheet();
 }
 
@@ -2012,12 +2262,13 @@ function updateRetro_(force) {
   }
   const numRows = trimGameRows_(sheet, nameIdx);
   if (numRows === 0) return [];
+  const top = topRow_(sheet);
   fillFormulas_(sheet, headers, nameIdx, col, numRows);
 
   const used = Object.keys(col).map(k => col[k]).filter(i => i >= 0).concat([nameIdx]);
   const minC = Math.min.apply(null, used);
   const maxC = Math.max.apply(null, used);
-  const data = sheet.getRange(2, minC + 1, numRows, maxC - minC + 1).getValues();
+  const data = sheet.getRange(top, minC + 1, numRows, maxC - minC + 1).getValues();
   const cell = (row, idx) => row[idx - minC];
   const keepRules = c.keep;
 
@@ -2059,9 +2310,12 @@ function updateRetro_(force) {
 
   // --- Details we still need: genres, and totals for a typed Game ID that isn't in your history ---
   const genreCache = loadJson_(props, 'GENRE_CACHE') || {};
-  const gblank = it => String(cell(data[it.i], col.genre)).trim() === '';
+  const gblank = it => { const g = String(cell(data[it.i], col.genre)).trim(); return g === '' || g === 'Unknown'; };
+  // RetroAchievements has no genre for some games. That is remembered as "Unknown" but asked again after a week.
+  const nowMs = Date.now();
+  const genreDue = id => genreCache['ra' + id] === undefined || (genreCache['ra' + id] === 'Unknown' && nowMs - (genreCache['rat' + id] || 0) > GENRE_RETRY_DAYS * 86400000);
   const needInfo = items.filter(it => !it.missing && ((!it.entry && !it.found) ||
-    (col.genre >= 0 && genreCache['ra' + it.id] === undefined && (!keepRules.genre || gblank(it)))));
+    (col.genre >= 0 && genreDue(it.id) && (!keepRules.genre || gblank(it)))));
   // Games with a newer achievement than last time also need their achievement list (names for the Discord post).
   const lastUnlock = loadJson_(props, 'LAST_UNLOCK') || {};
   const epochOf = e => { const d = e ? parseRaDate_(e.MostRecentAwardedDate) : null; return d ? Math.floor(d.getTime() / 1000) : 0; };
@@ -2072,14 +2326,19 @@ function updateRetro_(force) {
   const infos = ids.length ? raFetchInfo_(ids, 150) : {};
   let cacheChanged = false;
   ids.forEach(id => {
-    if (infos[id] && genreCache['ra' + id] === undefined) { genreCache['ra' + id] = String(infos[id].Genre || '').trim() || 'Unknown'; cacheChanged = true; }
+    if (infos[id] && genreDue(id)) {
+      const g = String(infos[id].Genre || '').trim();
+      genreCache['ra' + id] = g || 'Unknown';
+      if (g) delete genreCache['rat' + id]; else genreCache['rat' + id] = nowMs;
+      cacheChanged = true;
+    }
   });
   if (cacheChanged) saveJson_(props, 'GENRE_CACHE', genreCache);
 
   // --- Fill the output columns ---
   const { out, orig, put } = outputSet_(data, col,
     ['appid', 'console', 'genre', 'unlocked', 'hardcore', 'total', 'lastPlayed', 'completed', 'updated'], cell, keepRules);
-  const nameRange = sheet.getRange(2, nameIdx + 1, numRows, 1);
+  const nameRange = sheet.getRange(top, nameIdx + 1, numRows, 1);
   const notes = nameRange.getNotes();
   const oldNotes = notes.map(n => n[0]);
   // Problems are shown as a note on the game name (there is no STATUS column on this tab).
@@ -2183,6 +2442,7 @@ function updateRetro_(force) {
 
   // --- Write back (only our columns) ---
   writeColumns_(sheet, col, out, numRows);
+  alignColumns_(sheet, headers, numRows);
   if (notes.some((n, i) => n[0] !== oldNotes[i])) nameRange.setNotes(notes);
   saveJson_(props, 'LAST_UNLOCK', lastUnlock);
   applyPlayStatus_(sheet, headers, nameIdx, numRows);
@@ -2195,7 +2455,7 @@ function diagnoseRetro_(sheet) {
   const row = sheet.getActiveCell().getRow();
   const headers = headersOf_(sheet);
   const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
-  if (row < 2 || nameIdx === -1) { alert_('Click a cell in a game\'s row first (not the header row).'); return; }
+  if (row < topRow_(sheet) || nameIdx === -1) { alert_('Click a cell in a game\'s row first (not the header or totals row).'); return; }
   const title = String(sheet.getRange(row, nameIdx + 1).getValue()).trim();
   const ci = headers.indexOf('console');
   const consoleTxt = ci >= 0 ? String(sheet.getRange(row, ci + 1).getValue()).trim() : '';
@@ -2237,17 +2497,32 @@ function outputSet_(data, col, keys, cell, keepRules) {
     orig[k] = out[k].map(x => [x[0]]);
   });
   const put = (k, i, v) => {
-    if (!out[k] || (keepRules[k] && orig[k][i][0] !== '')) return;
+    if (!out[k] || (keepRules[k] && orig[k][i][0] !== '' && !(k === 'genre' && orig[k][i][0] === 'Unknown'))) return;   // an "Unknown" genre may be filled in later
     out[k][i] = [v];
   };
   return { out: out, orig: orig, put: put };
 }
 
+// Text alignment for the number and date columns (header names, so it works on both tabs).
+const ALIGN_CENTER = ['collected achies', 'hardcore achies', 'total achies', 'completed', 'hours played', 'last played', 'date completed'];
+const ALIGN_RIGHT = ['appid', 'game id', 'amount done'];
+
+function alignColumns_(sheet, headers, numRows) {
+  if (numRows < 1) return;
+  const top = topRow_(sheet);
+  [[ALIGN_CENTER, 'center'], [ALIGN_RIGHT, 'right']].forEach(g => g[0].forEach(h => {
+    const i = headers.indexOf(h);
+    if (i >= 0) sheet.getRange(top, i + 1, numRows, 1).setHorizontalAlignment(g[1]);
+  }));
+}
+
 // Writes only the columns the script owns, and sets the date formats on the date columns.
 function writeColumns_(sheet, col, out, numRows) {
   const dateFormats = { lastPlayed: 'yyyy-mm-dd', completed: 'yyyy-mm-dd', updated: 'yyyy-mm-dd hh:mm' };
+  const top = topRow_(sheet);
+  if (sheet.getFrozenRows() < top - 1) sheet.setFrozenRows(top - 1);   // keep the header (and the TOTALS row, if present) in view
   Object.keys(out).forEach(k => {
-    const range = sheet.getRange(2, col[k] + 1, numRows, 1);
+    const range = sheet.getRange(top, col[k] + 1, numRows, 1);
     range.setValues(out[k]);
     if (dateFormats[k]) range.setNumberFormat(dateFormats[k]);
   });
@@ -2325,16 +2600,19 @@ function storeSearch_(title) {
   return exact || items[0];
 }
 
-// True if the Steam store lists the app as free to play.
-function isFree_(appid) {
+// Asks the Steam store about an app: {free: is it free to play, dlc: name of the base game if it is DLC, else ''}.
+// Returns null on a temporary error so it is asked again next run.
+function appMeta_(appid) {
   try {
     const res = UrlFetchApp.fetch('https://store.steampowered.com/api/appdetails?appids=' + appid +
       '&filters=basic&cc=us', { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) return false;
+    if (res.getResponseCode() !== 200) return null;
     const entry = JSON.parse(res.getContentText())[appid];
-    return !!(entry && entry.success && entry.data && entry.data.is_free);
+    if (!entry || !entry.success || !entry.data) return { free: false, dlc: '' };
+    const d = entry.data;
+    return { free: !!d.is_free, dlc: d.type === 'dlc' ? ((d.fullgame && d.fullgame.name) || 'its base game') : '' };
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
