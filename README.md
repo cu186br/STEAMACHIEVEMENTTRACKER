@@ -89,10 +89,10 @@ Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to e
 |---|---|
 | **Update now**, **Update + post last played to Discord**, **Post weekly summary now (preview)** | The everyday actions. |
 | **Sort the list** | The sort options and the sort range. |
-| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
+| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
 | **Settings → Accounts** | Steam API key and ID, RetroAchievements username and key, Discord webhook. |
 | **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked. |
-| **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. |
+| **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. Turning **Link game names** off removes the Steam links the script added and resets those names to plain text (links you added yourself are left alone). |
 | **Settings → Backlog status** | The IDLE cutoff and the status colours. |
 | **Settings → Cell update rules** | Overwrite or keep your edits, per column. |
 | **Settings → Discord** | Last-played, 100% and weekly posts, and the weekly day and hour. |
@@ -119,11 +119,11 @@ On every update the script writes text into the column:
 | Status | When |
 |---|---|
 | **COMPLETED** | Every achievement is unlocked. |
-| **IDLE** | You have played it (hours or achievements) but not for the set number of months. |
+| **IDLE** | You have played it (hours or achievements) but not for the set time (days, weeks or months). |
 | **ACTIVE** | You have played it more recently than that. |
 | **BACKLOG** | No hours and no achievements yet. |
 
-- **Settings → Backlog status → Mark IDLE after N months** sets the cutoff (default 6; 0 turns IDLE off).
+- **Settings → Backlog status → Mark IDLE after…** sets the cutoff. Type a number and a unit: `30 days`, `3 weeks` or `6 months` (default 6 months). A number on its own keeps the current unit, and `0` turns IDLE off.
 - **Settings → Cell update rules → BACKLOG STATUS** chooses between *script overwrites* (default) and *keep my edits*, where a status you type stays and the script only fills blank cells.
 - A cell that holds your own formula is never overwritten.
 - Games with no recorded hours (Family Share, RetroAchievements) count as played once they have any achievements. A game with no last played date never becomes IDLE.
@@ -141,7 +141,7 @@ A script can't create Google's coloured chip dropdowns, but you can add them by 
 
 1. Click the first game cell in the BACKLOG STATUS column (for example `A2`). Press **Ctrl+Shift+Down** (**Cmd+Shift+Down** on a Mac) to select down to the last game row. Don't include the header or the totals row.
 2. Choose **Insert → Dropdown**. A side panel opens.
-3. Under criteria choose **Dropdown**, then add four items, spelled exactly as the script writes them, in capitals: `COMPLETED`, `IDLE`, `PLAYED`, `BACKLOG`.
+3. Under criteria choose **Dropdown**, then add four items, spelled exactly as the script writes them, in capitals: `COMPLETED`, `IDLE`, `ACTIVE`, `BACKLOG`.
 4. Click the coloured dot next to each item and pick a colour.
 5. Open **Advanced options**, set **If the data is invalid** to **Show a warning**, and set **Display style** to **Chip**.
 6. Click **Done**. The existing text turns into coloured chips.
@@ -158,6 +158,23 @@ The script never removes chips, dropdowns or colours you add yourself, and **Add
 - **Date completed (newest or oldest first):** needs the DATE COMPLETED column. Games without a date go last.
 
 Sorting only reorders the game table, so lists next to it and the totals row are never moved. Rows without data go last. **Sort range** limits the sort to columns you choose, for example `A:L`. Use these instead of Google Sheets' own sort or filter, which reorders the whole sheet and breaks things.
+
+## Totals row under the header
+
+**Tools → Add totals row under the header** adds a bold `TOTALS` row directly below the header that mirrors the totals row at the bottom of the list, and freezes it so the totals stay in view while you scroll. Do it once per tab (run it while looking at the tab you want; it needs the totals row at the bottom to already exist, which blank-sheet setup creates).
+
+- Everything below the header moves down by one row, so your games start on **row 3**. The script finds the first game row by itself, so updating, sorting, importing, adding rows, the BACKLOG STATUS column and Discord posts all keep working. Formulas you wrote yourself that point at specific rows are adjusted by Google Sheets as usual.
+- Don't type games into the `TOTALS` row, and leave the label as `TOTALS` so the script can recognise it.
+- To remove it, delete the row and unfreeze it (**View → Freeze → 1 row**).
+
+## Importing your library
+
+**Tools → Import library games with achievements…** adds every game in your Steam library that **has achievements** and is not on the sheet yet. Games without achievements are ignored. It is a manual button and never runs by itself, not even when a sheet is first set up.
+
+- **It can take a long time** on a big library, because Steam is asked about every game. A confirmation warns you first. If it runs out of time it saves its progress, so run it again to carry on.
+- New games are added below the existing list in A to Z order with their AppID, and the update that follows fills in hours, achievements and genres. They are not announced on Discord.
+- Games already on the sheet (matched by AppID or name) are skipped, and rows are added above the totals row when there is no room left.
+- Your Steam profile and **Game details** must be Public.
 
 ## Adding more game rows
 
@@ -188,6 +205,8 @@ You can also run **Tools → Set up RetroAchievements tab** at any time, before 
 - **Fill in CONSOLE** (for example `SNES`, `GBA`, `Game Boy Advance`, `PlayStation`) to search just that console's list. This is quicker, and it's how you pick the right one when a title exists on several consoles. Without a console the script searches every console, which can take a few updates the first time. Game lists are cached for 6 hours and found games are remembered, so it doesn't repeat the work.
 - **Titles that can't be matched** get a note on the game name cell (hover to read it): not found, found on several consoles, or a close match to verify. Hacks, homebrew and subsets are skipped.
 - Games with no achievements on RetroAchievements aren't in the game lists, so they show as not found.
+
+Columns are aligned for readability: COLLECTED ACHIES, HARDCORE ACHIES, TOTAL ACHIES, COMPLETED, HOURS PLAYED, LAST PLAYED and DATE COMPLETED are centered; APPID and AMOUNT DONE are right-aligned. The script applies this on every update to the rows in use.
 
 The RetroAchievements tab carries over Discord posts (last played, 100% completion which says *Mastered in hardcore* when it applies), the weekly summary, sorting, update rules and totals. It has no store links, AppID, hours or STATUS column.
 
@@ -223,6 +242,7 @@ The STATUS column holds a short label. **Hover over the cell** for a note explai
 | `Not started` | You have never launched the game, so Steam has no stats yet. The total comes from the game's achievement list and collected is 0. |
 | `· Shared` | You don't own the game in your library (Family Sharing). Achievements still work, but hours may not. |
 | `· Free` | The game is free to play and counts as owned. Achievements work, but Steam doesn't always report its hours. |
+| `· DLC` | The Steam store lists the game you typed (or its matched AppID) as DLC. The note names the base game. DLC usually has no achievements of its own, so expect `No achievements · DLC`; add the base game instead if you want its achievements. |
 | `· Check match` | The Steam store's closest match has a different name. If it is the wrong game, type the correct AppID into the APPID cell. |
 | `Not owned` | The game wasn't found in your library or on the Steam store under that name, so it is treated as not owned. Fix the spelling, or type the AppID into APPID if you do have access to it. |
 | `No achievements` | Steam says the game has none. Any numbers already on the sheet are kept. |
@@ -236,6 +256,7 @@ The STATUS column holds a short label. **Hover over the cell** for a note explai
 - **"Steam returned no games":** your Game details are not public, or the Steam ID or API key is wrong.
 - **An achievement was just unlocked but hasn't shown up:** Steam can lag by a few minutes, and the script re-checks recently played games on every update. Playing offline may delay it until Steam syncs.
 - **Genres are blank:** the Steam store limits requests, so a large list may need a second **Update now** (the script tells you if some are still blank).
+- **A RetroAchievements genre says `Unknown`:** RetroAchievements has no genre for that game. It is asked again after a week, and an `Unknown` cell is filled in automatically as soon as a genre appears, even if GENRE is set to keep your edits. A genre you typed yourself is never replaced.
 - **A RetroAchievements game isn't found:** read the note on its name cell. Fill in CONSOLE, or check the spelling against retroachievements.org.
 - **Discord posts don't arrive:** run **Discord webhook** under **Accounts** again and check that the test message appears. The weekly summary and automatic posts only happen while auto-update is on.
 - **Weekly summary arrives at the wrong time:** it uses the time zone in **File → Settings** of your sheet.
