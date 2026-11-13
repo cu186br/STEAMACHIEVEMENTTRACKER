@@ -27,7 +27,7 @@ const DEFAULTS = {
 };
 const RULE_COLS = [
   ['appid', 'APPID / GAME ID'], ['console', 'CONSOLE'], ['genre', 'GENRE'], ['unlocked', 'COLLECTED ACHIES'],
-  ['hardcore', 'HARDCORE ACHIES'], ['total', 'TOTAL ACHIES'], ['hours', 'HOURS PLAYED'],
+  ['hardcore', 'COLLECTED HC ACHIES'], ['total', 'TOTAL ACHIES'], ['hours', 'HOURS PLAYED'],
   ['lastPlayed', 'LAST PLAYED'], ['completed', 'DATE COMPLETED'], ['updated', 'LAST UPDATED'], ['playStatus', 'BACKLOG STATUS']
 ];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -134,6 +134,7 @@ function buildMenu_() {
     .addItem('Send test 100% post to Discord', 'sendTestCompletion')
     .addItem('Add game rows\u2026', 'addGameRows')
     .addItem('Add totals row under the header', 'addTopTotals')
+    .addItem('Upgrade RetroAchievements columns (hardcore)', 'upgradeRetroLayout')
     .addItem('Import library games with achievements\u2026', 'importLibrary')
     .addSeparator()
     .addItem('Add BACKLOG STATUS column', 'addPlayStatusColumn')
@@ -901,7 +902,8 @@ function sendTestCompletion() {
       const id = col('appid') >= 0 ? r[col('appid')] : '';
       if (id) t.cover = 'https://cdn.cloudflare.steamstatic.com/steam/apps/' + id + '/header.jpg';
     } else {
-      t.hardcore = col('hardcore achies') >= 0 ? r[col('hardcore achies')] : undefined;
+      const hci = col('collected hc achies') >= 0 ? col('collected hc achies') : col('hardcore achies');
+      t.hardcore = hci >= 0 ? r[hci] : undefined;
       t.consoleName = col('console') >= 0 ? String(r[col('console')]).trim() : '';
     }
     return t;
@@ -1196,30 +1198,63 @@ function setupSheet() {
   alert_('Sheet set up. Type your game names under GAME LIST, then run Update now.');
 }
 
+// The achievement columns come in groups: normal, and (on the RetroAchievements tab) hardcore.
+const ACH_GROUPS = [
+  { c: 'COLLECTED ACHIES', t: 'TOTAL ACHIES', a: 'AMOUNT DONE', p: 'PROGRESS', d: 'COMPLETED' },
+  { c: 'COLLECTED HC ACHIES', t: 'TOTAL HC ACHIES', a: 'HC AMOUNT DONE', p: 'HC PROGRESS', d: 'HC COMPLETED' }
+];
+const BAR = '{"charttype","bar";"max",1;"color1","#34a853"}';
+
+// A1 formulas for one game row of a group. L maps header -> column letter, nl is the GAME LIST letter.
+function groupRowFormulas_(L, g, nl, r) {
+  const done = L[g.a] + r, f = {};
+  f[g.a] = '=IFERROR(IF(OR(' + L[g.c] + r + '="",' + L[g.t] + r + '=""),"",' + L[g.c] + r + '/' + L[g.t] + r + '),"")';
+  f[g.p] = '=IF(' + done + '="","",SPARKLINE(MIN(' + done + ',1),' + BAR + '))';
+  f[g.d] = '=IF(' + nl + r + '="","",IFS(' + done + '>=5,"?",' + done + '>=1,"✓",TRUE,"X"))';
+  return f;
+}
+
+// Totals formulas for the row `tr` (game rows first..last). only = restrict to one group.
+function writeTotals_(sheet, L, tr, first, last, nl, only) {
+  const put = (h, f, fmt) => {
+    if (!L[h]) return;
+    const r = sheet.getRange(tr, colIndex_(L[h]) + 1).setFormula(f);
+    if (fmt) r.setNumberFormat(fmt);
+  };
+  const sum = h => '=SUM(' + L[h] + first + ':' + L[h] + last + ')';
+  ACH_GROUPS.forEach(g => {
+    if (only && only !== g) return;
+    if (!(L[g.c] && L[g.t] && L[g.a])) return;
+    put(g.c, sum(g.c)); put(g.t, sum(g.t));
+    put(g.a, '=IFERROR(' + L[g.c] + tr + '/' + L[g.t] + tr + ',"")', '0.0%');
+    put(g.p, '=IF(' + L[g.a] + tr + '="","",SPARKLINE(MIN(' + L[g.a] + tr + ',1),' + BAR + '))');
+    put(g.d, '=COUNTIF(' + L[g.d] + first + ':' + L[g.d] + last + ',"✓") & " / " & COUNTA(' + nl + first + ':' + nl + last + ')');
+  });
+  if (!only) put('HOURS PLAYED', sum('HOURS PLAYED'), '#,##0.0" hrs"');
+}
+
 // Relative R1C1 reference from column index `to` to column index `from` on the same row.
 function rc_(from, to) { return from === to ? 'RC' : 'RC[' + (from - to) + ']'; }
 
 // Copies the AMOUNT DONE / PROGRESS / COMPLETED formulas into empty cells of game rows. Existing formulas and values are untouched.
 function fillFormulas_(sheet, headers, nameIdx, col, numRows) {
   const top = topRow_(sheet);
-  const amount = headers.indexOf('amount done');
-  if (amount === -1) return;
-  const progress = headers.indexOf('progress');
-  const completed = headers.indexOf('completed');
-  const targets = [
-    { idx: amount, def: '=IFERROR(IF(OR(' + rc_(col.unlocked, amount) + '="",' + rc_(col.total, amount) + '=""),"",' +
-        rc_(col.unlocked, amount) + '/' + rc_(col.total, amount) + '),"")' }
-  ];
-  if (progress !== -1) {
-    const a = rc_(amount, progress);
-    targets.push({ idx: progress,
-      def: '=IF(' + a + '="","",SPARKLINE(MIN(' + a + ',1),{"charttype","bar";"max",1;"color1","#34a853"}))' });
-  }
-  if (completed !== -1) {
-    const a = rc_(amount, completed);
-    targets.push({ idx: completed,
-      def: '=IF(' + rc_(nameIdx, completed) + '="","",IFS(' + a + '>=5,"?",' + a + '>=1,"✓",TRUE,"X"))' });
-  }
+  const targets = [];
+  ACH_GROUPS.forEach(g => {
+    const [ci, ti, amount, progress, completed] = [g.c, g.t, g.a, g.p, g.d].map(h => headers.indexOf(h.toLowerCase()));
+    if (amount === -1 || ci === -1 || ti === -1) return;
+    targets.push({ idx: amount, def: '=IFERROR(IF(OR(' + rc_(ci, amount) + '="",' + rc_(ti, amount) + '=""),"",' +
+        rc_(ci, amount) + '/' + rc_(ti, amount) + '),"")' });
+    if (progress !== -1) {
+      const a = rc_(amount, progress);
+      targets.push({ idx: progress, def: '=IF(' + a + '="","",SPARKLINE(MIN(' + a + ',1),' + BAR + '))' });
+    }
+    if (completed !== -1) {
+      const a = rc_(amount, completed);
+      targets.push({ idx: completed,
+        def: '=IF(' + rc_(nameIdx, completed) + '="","",IFS(' + a + '>=5,"?",' + a + '>=1,"✓",TRUE,"X"))' });
+    }
+  });
 
   targets.forEach(t => {
     const rng = sheet.getRange(top, t.idx + 1, numRows, 1);
@@ -1267,21 +1302,22 @@ function setupLayout_(sheet, layout) {
     .setFontWeight('bold').setBackground('#1b2838').setFontColor('#ffffff');
   sheet.setFrozenRows(1);
 
-  // Formulas for AMOUNT DONE, PROGRESS and COMPLETED, filled down for future games
-  const rows = [];
-  for (let r = 2; r <= lastGameRow; r++) {
-    const done = L['AMOUNT DONE'] + r;
-    rows.push([
-      '=IFERROR(IF(OR(' + L['COLLECTED ACHIES'] + r + '="",' + L['TOTAL ACHIES'] + r + '=""),"",' +
-        L['COLLECTED ACHIES'] + r + '/' + L['TOTAL ACHIES'] + r + '),"")',
-      '=IF(' + done + '="","",SPARKLINE(MIN(' + done + ',1),{"charttype","bar";"max",1;"color1","#34a853"}))',
-      '=IF(' + L['GAME LIST'] + r + '="","",IFS(' + done + '>=5,"?",' + done + '>=1,"✓",TRUE,"X"))'
-    ]);
-  }
-  sheet.getRange(2, at('AMOUNT DONE'), rows.length, 3).setFormulas(rows);
+  // Formulas for AMOUNT DONE, PROGRESS and COMPLETED (and the HC versions), filled down for future games
+  const nl = L['GAME LIST'];
+  const nrows = lastGameRow - 1;
+  ACH_GROUPS.forEach(g => {
+    if (!(has(g.c) && has(g.t) && has(g.a))) return;
+    const cols = {};
+    for (let r = 2; r <= lastGameRow; r++) {
+      const f = groupRowFormulas_(L, g, nl, r);
+      Object.keys(f).forEach(h => { (cols[h] = cols[h] || []).push([f[h]]); });
+    }
+    Object.keys(cols).forEach(h => { if (has(h)) sheet.getRange(2, at(h), nrows, 1).setFormulas(cols[h]); });
+  });
+  const rows = new Array(nrows);
 
   // Number formats
-  sheet.getRange(2, at('AMOUNT DONE'), rows.length, 1).setNumberFormat('0.00%');
+  ACH_GROUPS.forEach(g => { if (has(g.a)) sheet.getRange(2, at(g.a), rows.length, 1).setNumberFormat('0.00%'); });
   if (has('HOURS PLAYED')) sheet.getRange(2, at('HOURS PLAYED'), rows.length, 1).setNumberFormat('0.0');
   sheet.getRange(2, at('LAST PLAYED'), rows.length, 1).setNumberFormat('yyyy-mm-dd');
   if (has('DATE COMPLETED')) sheet.getRange(2, at('DATE COMPLETED'), rows.length, 1).setNumberFormat('yyyy-mm-dd');
@@ -1290,27 +1326,20 @@ function setupLayout_(sheet, layout) {
   alignColumns_(sheet, layout.map(h => h.toLowerCase()), rows.length + 1);   // the totals row too
 
   // COMPLETED colours
-  const cr = sheet.getRange(2, at('COMPLETED'), rows.length, 1);
-  sheet.setConditionalFormatRules(sheet.getConditionalFormatRules().concat([
-    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('✓').setBackground('#b7e1cd').setRanges([cr]).build(),
-    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('X').setBackground('#f4c7c3').setRanges([cr]).build()
-  ]));
+  let cf = sheet.getConditionalFormatRules();
+  ACH_GROUPS.forEach(g => {
+    if (!has(g.d)) return;
+    const cr = sheet.getRange(2, at(g.d), rows.length, 1);
+    cf = cf.concat([
+      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('✓').setBackground('#b7e1cd').setRanges([cr]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('X').setBackground('#f4c7c3').setRanges([cr]).build()
+    ]);
+  });
+  sheet.setConditionalFormatRules(cf);
 
   // Totals row
+  writeTotals_(sheet, L, totalsRow, 2, lastGameRow, nl);
   const tr = totalsRow;
-  const sum = h => '=SUM(' + L[h] + '2:' + L[h] + lastGameRow + ')';
-  sheet.getRange(tr, at('COLLECTED ACHIES')).setFormula(sum('COLLECTED ACHIES'));
-  if (has('HARDCORE ACHIES')) sheet.getRange(tr, at('HARDCORE ACHIES')).setFormula(sum('HARDCORE ACHIES'));
-  sheet.getRange(tr, at('TOTAL ACHIES')).setFormula(sum('TOTAL ACHIES'));
-  sheet.getRange(tr, at('AMOUNT DONE')).setFormula(
-    '=IFERROR(' + L['COLLECTED ACHIES'] + tr + '/' + L['TOTAL ACHIES'] + tr + ',"")').setNumberFormat('0.0%');
-  sheet.getRange(tr, at('PROGRESS')).setFormula(
-    '=IF(' + L['AMOUNT DONE'] + tr + '="","",SPARKLINE(MIN(' + L['AMOUNT DONE'] + tr + ',1),' +
-    '{"charttype","bar";"max",1;"color1","#34a853"}))');
-  sheet.getRange(tr, at('COMPLETED')).setFormula(
-    '=COUNTIF(' + L['COMPLETED'] + '2:' + L['COMPLETED'] + lastGameRow + ',"✓") & " / " & COUNTA(' +
-    L['GAME LIST'] + '2:' + L['GAME LIST'] + lastGameRow + ')');
-  if (has('HOURS PLAYED')) sheet.getRange(tr, at('HOURS PLAYED')).setFormula(sum('HOURS PLAYED')).setNumberFormat('#,##0.0" hrs"');
   sheet.getRange(tr, 1, 1, n).setFontWeight('bold');
 
   sheet.setColumnWidth(1, 260);
@@ -1320,7 +1349,8 @@ function setupLayout_(sheet, layout) {
 
 // Header names that belong to the game table (used to work out which columns the Sort / Add rows tools move).
 const TABLE_HEADERS = ['game list', 'game', 'name', 'title', 'game name', 'genre', 'appid', 'game id', 'console',
-  'collected achies', 'hardcore achies', 'total achies', 'amount done', 'progress', 'completed', 'hours played',
+  'collected achies', 'hardcore achies', 'total achies', 'amount done', 'progress', 'completed',
+  'collected hc achies', 'total hc achies', 'hc amount done', 'hc progress', 'hc completed', 'hours played',
   'last played', 'date completed', 'last updated', 'status', 'backlog status', 'play status', 'backlog'];
 
 function headersOf_(sheet) {
@@ -1569,6 +1599,82 @@ function settingGameRows() {
   alert_('New blank sheets will get ' + n + ' game rows.');
 }
 
+// ---------- RetroAchievements: split hardcore into its own columns ----------
+// Older RetroAchievements tabs have one HARDCORE ACHIES column. This replaces it with a full hardcore set after COMPLETED:
+// COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED (with totals), and keeps your hardcore numbers.
+
+const HC_HEADERS = ['COLLECTED HC ACHIES', 'TOTAL HC ACHIES', 'HC AMOUNT DONE', 'HC PROGRESS', 'HC COMPLETED'];
+
+function upgradeRetroLayout() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(cfg_().raSheetName);
+  if (!sheet) { alert_('There is no "' + cfg_().raSheetName + '" tab yet.'); return; }
+  const r = withLock_(() => upgradeRetroLayout_(sheet));
+  if (r) { alert_(r); updateSteamSheet(); }
+}
+
+function upgradeRetroLayout_(sheet) {
+  let headers = headersOf_(sheet);
+  const name = '"' + sheet.getName() + '"';
+  if (headers.indexOf('collected hc achies') !== -1) { alert_(name + ' already has the hardcore columns.'); return null; }
+  const need = ['collected achies', 'total achies'];
+  if (need.some(h => headers.indexOf(h) === -1)) { alert_(name + ' needs COLLECTED ACHIES and TOTAL ACHIES columns first.'); return null; }
+  const tr0 = totalsRowOf_(sheet, headers);
+  const top = topRow_(sheet);
+  const anchor = Math.max.apply(null, ['completed', 'progress', 'amount done', 'total achies'].map(h => headers.indexOf(h)));
+  const maxRows = sheet.getMaxRows();
+
+  sheet.insertColumnsAfter(anchor + 1, 5);                        // five new columns right after COMPLETED
+  headers = headersOf_(sheet);
+  const oldHc = headers.indexOf('hardcore achies');
+  const at = h => headers.indexOf(h);
+  const dst = [anchor + 1, anchor + 2, anchor + 3, anchor + 4, anchor + 5];
+  const src = [oldHc >= 0 ? oldHc : at('collected achies'), at('total achies'), at('amount done'), at('progress'), at('completed')];
+  dst.forEach((d, k) => {
+    if (src[k] < 0) return;
+    sheet.getRange(1, src[k] + 1, maxRows, 1).copyTo(sheet.getRange(1, d + 1, maxRows, 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  });
+  sheet.getRange(1, anchor + 2, 1, 5).setValues([HC_HEADERS]);
+  const last = tr0 ? tr0 - 1 : Math.max(sheet.getLastRow(), top);
+  if (oldHc >= 0 && last >= top) {                                // carry over the hardcore numbers you already have
+    const vals = sheet.getRange(top, oldHc + 1, last - top + 1, 1).getValues();
+    sheet.getRange(top, anchor + 2, vals.length, 1).setValues(vals);
+  }
+  if (oldHc >= 0) sheet.deleteColumn(oldHc + 1);
+
+  // Letters for the final layout, then formulas for every game row (down to the totals row) and the totals.
+  headers = headersOf_(sheet);
+  const L = {};
+  headers.forEach((h, i) => { if (h) L[h.toUpperCase()] = colLetter_(i); });
+  const nl = colLetter_(headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1));
+  const g = ACH_GROUPS[1];
+  const cols = {};
+  for (let r = top; r <= last; r++) {
+    const f = groupRowFormulas_(L, g, nl, r);
+    Object.keys(f).forEach(h => { (cols[h] = cols[h] || []).push([f[h]]); });
+  }
+  Object.keys(cols).forEach(h => sheet.getRange(top, headers.indexOf(h.toLowerCase()) + 1, last - top + 1, 1).setFormulas(cols[h]));
+  sheet.getRange(top, headers.indexOf('total hc achies') + 1, last - top + 1, 1).clearContent();   // filled by the next update
+
+  const cr = sheet.getRange(top, headers.indexOf('hc completed') + 1, Math.max(sheet.getMaxRows() - top + 1, 1), 1);
+  sheet.setConditionalFormatRules(sheet.getConditionalFormatRules().concat([
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('✓').setBackground('#b7e1cd').setRanges([cr]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('X').setBackground('#f4c7c3').setRanges([cr]).build()
+  ]));
+
+  const tr = tr0 ? tr0 : 0;                                       // the bottom totals row (deleting a column doesn't move rows)
+  if (tr) writeTotals_(sheet, L, tr, top, last, nl, g);
+  if (top === 3) {                                                // the TOTALS row under the header mirrors the new columns
+    const row2 = {};
+    HC_HEADERS.forEach(h => {
+      const c = L[h];
+      row2[h] = h === 'HC PROGRESS' ? '=IF(' + L['HC AMOUNT DONE'] + '2="","",SPARKLINE(MIN(' + L['HC AMOUNT DONE'] + '2,1),' + BAR + '))' : (tr ? '=' + c + tr : '');
+      if (row2[h]) sheet.getRange(2, colIndex_(c) + 1).setFormula(row2[h]);
+    });
+  }
+  return 'The hardcore columns were added after COMPLETED on ' + name + ' (COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED), with totals. Your hardcore numbers were kept; the totals are filled in by the update that follows.';
+}
+
 // ---------- totals row under the header ----------
 // Inserts a TOTALS row directly under the header that mirrors the totals row at the bottom, so the totals are always in view.
 // Rows below move down by one; the script finds the first game row by looking for this row.
@@ -1594,11 +1700,12 @@ function addTopTotals_(sheet) {
   sheet.insertRowsAfter(1, 1);                                   // the new row 2 (the bottom totals row is now at tr + 1)
   const row = sheet.getRange(2, 1, 1, width);
   sheet.getRange(tr + 1, 1, 1, width).copyTo(row, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-  const progress = headers.indexOf('progress'), amount = headers.indexOf('amount done');
+  const bars = {};                                               // PROGRESS column index -> its AMOUNT DONE column index
+  ACH_GROUPS.forEach(g => { const p = headers.indexOf(g.p.toLowerCase()), a = headers.indexOf(g.a.toLowerCase()); if (p >= 0 && a >= 0) bars[p] = a; });
   const f = [];
   for (let i = 0; i < width; i++) {
     if (i === nameIdx) f.push('TOTALS');
-    else if (i === progress && amount >= 0) f.push('=IF(' + L(amount) + '2="","",SPARKLINE(MIN(' + L(amount) + '2,1),{"charttype","bar";"max",1;"color1","#34a853"}))');
+    else if (bars[i] !== undefined) f.push('=IF(' + L(bars[i]) + '2="","",SPARKLINE(MIN(' + L(bars[i]) + '2,1),' + BAR + '))');
     else if (bf[i] || (bv[i] !== '' && bv[i] !== null)) f.push('=' + L(i) + (tr + 1));
     else f.push('');
   }
@@ -1937,8 +2044,9 @@ function addPlayStatusColumn() {
 // ---------- RetroAchievements ----------
 
 const RA_BASE = 'https://retroachievements.org/API/';
-const RA_LAYOUT = ['GAME LIST', 'CONSOLE', 'GENRE', 'COLLECTED ACHIES', 'HARDCORE ACHIES', 'TOTAL ACHIES', 'AMOUNT DONE',
-  'PROGRESS', 'COMPLETED', 'LAST PLAYED', 'DATE COMPLETED', 'LAST UPDATED'];
+const RA_LAYOUT = ['GAME LIST', 'CONSOLE', 'GENRE', 'COLLECTED ACHIES', 'TOTAL ACHIES', 'AMOUNT DONE', 'PROGRESS', 'COMPLETED',
+  'COLLECTED HC ACHIES', 'TOTAL HC ACHIES', 'HC AMOUNT DONE', 'HC PROGRESS', 'HC COMPLETED',
+  'LAST PLAYED', 'DATE COMPLETED', 'LAST UPDATED'];
 const RA_NOTE = 'RetroAchievements: ';
 
 function normRa_(s) { return norm_(String(s).normalize('NFD').replace(/[̀-ͯ]/g, '')); }
@@ -2254,7 +2362,7 @@ function updateRetro_(force) {
   const H = h => headers.indexOf(h);
   const nameIdx = headers.findIndex(h => NAME_HEADERS.indexOf(h) !== -1);
   if (nameIdx === -1) throw new Error('Could not find a "GAME LIST" column in row 1 of the "' + c.raSheetName + '" tab.');
-  const col = { unlocked: H('collected achies'), total: H('total achies'), hardcore: H('hardcore achies'), console: H('console'),
+  const col = { unlocked: H('collected achies'), total: H('total achies'), hardcore: H('collected hc achies') >= 0 ? H('collected hc achies') : H('hardcore achies'), totalHc: H('total hc achies'), console: H('console'),
     genre: c.genreColumn ? H('genre') : -1, lastPlayed: H('last played'), completed: H('date completed'),
     updated: H('last updated'), appid: H('game id') };
   if (col.unlocked === -1 || col.total === -1) {
@@ -2337,7 +2445,8 @@ function updateRetro_(force) {
 
   // --- Fill the output columns ---
   const { out, orig, put } = outputSet_(data, col,
-    ['appid', 'console', 'genre', 'unlocked', 'hardcore', 'total', 'lastPlayed', 'completed', 'updated'], cell, keepRules);
+    ['appid', 'console', 'genre', 'unlocked', 'hardcore', 'total', 'totalHc', 'lastPlayed', 'completed', 'updated'], cell,
+    Object.assign({}, keepRules, { totalHc: keepRules.total }));
   const nameRange = sheet.getRange(top, nameIdx + 1, numRows, 1);
   const notes = nameRange.getNotes();
   const oldNotes = notes.map(n => n[0]);
@@ -2395,6 +2504,7 @@ function updateRetro_(force) {
         (out.hardcore && orig.hardcore[i][0] !== hc) || (out.updated && orig.updated[i][0] === '');
       put('unlocked', i, awarded);
       put('total', i, total);
+      put('totalHc', i, total);
       put('hardcore', i, hc);
       if (out.completed) put('completed', i, awarded === total && doneDate ? doneDate : '');
       if (changed) put('updated', i, now);
@@ -2504,8 +2614,9 @@ function outputSet_(data, col, keys, cell, keepRules) {
 }
 
 // Text alignment for the number and date columns (header names, so it works on both tabs).
-const ALIGN_CENTER = ['collected achies', 'hardcore achies', 'total achies', 'completed', 'hours played', 'last played', 'date completed'];
-const ALIGN_RIGHT = ['appid', 'game id', 'amount done'];
+const ALIGN_CENTER = ['collected achies', 'hardcore achies', 'total achies', 'completed', 'collected hc achies', 'total hc achies', 'hc completed',
+  'hours played', 'last played', 'date completed'];
+const ALIGN_RIGHT = ['appid', 'game id', 'amount done', 'hc amount done'];
 
 function alignColumns_(sheet, headers, numRows) {
   if (numRows < 1) return;
