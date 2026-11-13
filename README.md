@@ -89,7 +89,7 @@ Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to e
 |---|---|
 | **Update now**, **Update + post last played to Discord**, **Post weekly summary now (preview)** | The everyday actions. |
 | **Sort the list** | The sort options and the sort range. |
-| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
+| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Upgrade RetroAchievements columns (hardcore), Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
 | **Settings → Accounts** | Steam API key and ID, RetroAchievements username and key, Discord webhook. |
 | **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked. |
 | **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. Turning **Link game names** off removes the Steam links the script added and resets those names to plain text (links you added yourself are left alone). |
@@ -193,7 +193,7 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 3. Copy your **Web API Key**. Don't use the Connect key. Your **username** is the name shown on your profile.
 4. In your Google Sheet, run **Steam Tracker → Settings → Accounts → RetroAchievements username & key**.
 5. Enter your username, then paste the key. The script checks them against RetroAchievements. If they are wrong it says so and saves nothing.
-6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, HARDCORE ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, LAST PLAYED, DATE COMPLETED, LAST UPDATED, and turns RetroAchievements on.
+6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED, LAST PLAYED, DATE COMPLETED, LAST UPDATED, and turns RetroAchievements on.
 7. Type game names under GAME LIST, then run **Update now**.
 
 You can also run **Tools → Set up RetroAchievements tab** at any time, before or after connecting. It only works on a blank tab, so it can't overwrite anything. Turn the tracking on or off and rename the tab under **Settings → Sheets & columns**.
@@ -206,7 +206,11 @@ You can also run **Tools → Set up RetroAchievements tab** at any time, before 
 - **Titles that can't be matched** get a note on the game name cell (hover to read it): not found, found on several consoles, or a close match to verify. Hacks, homebrew and subsets are skipped.
 - Games with no achievements on RetroAchievements aren't in the game lists, so they show as not found.
 
-Columns are aligned for readability: COLLECTED ACHIES, HARDCORE ACHIES, TOTAL ACHIES, COMPLETED, HOURS PLAYED, LAST PLAYED and DATE COMPLETED are centered; APPID and AMOUNT DONE are right-aligned. The script applies this on every update to the rows in use.
+Columns are aligned for readability: COLLECTED ACHIES, TOTAL ACHIES, COMPLETED, HOURS PLAYED, LAST PLAYED and DATE COMPLETED are centered (on the RetroAchievements tab also COLLECTED HC ACHIES, TOTAL HC ACHIES and HC COMPLETED); APPID, AMOUNT DONE and HC AMOUNT DONE are right-aligned. The script applies this on every update to the rows in use.
+
+**Normal and hardcore columns.** The RetroAchievements tab has two sets of achievement columns: COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS and COMPLETED for all achievements, then COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS and HC COMPLETED for hardcore. Both sets are in the totals row (and in the TOTALS row under the header, if you added it). TOTAL HC ACHIES follows the **TOTAL ACHIES** cell update rule, and COLLECTED HC ACHIES has its own rule.
+
+**Already have a RetroAchievements tab?** Open **Tools → Upgrade RetroAchievements columns (hardcore)** once. It inserts the five hardcore columns after COMPLETED, moves the numbers from your old HARDCORE ACHIES column into COLLECTED HC ACHIES (then removes the old column), fills in the formulas down the list, adds the totals, and runs an update. A tab that still has the old single HARDCORE ACHIES column keeps working until you upgrade it.
 
 The RetroAchievements tab carries over Discord posts (last played, 100% completion which says *Mastered in hardcore* when it applies), the weekly summary, sorting, update rules and totals. It has no store links, AppID, hours or STATUS column.
 
@@ -274,7 +278,3 @@ Google Apps Script has daily quotas. A normal list updates well within them, but
 ## Updating
 
 Replace the code in **Extensions → Apps Script** with the newer `SteamTracker.gs`, save, and reload the sheet. Your settings and saved details are kept. See `CHANGELOG.md` for what changed.
-
-## License
-
-Add the license of your choice here, for example MIT.
