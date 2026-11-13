@@ -89,7 +89,7 @@ Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to e
 |---|---|
 | **Update now**, **Update + post last played to Discord**, **Post weekly summary now (preview)** | The everyday actions. |
 | **Sort the list** | The sort options and the sort range. |
-| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Upgrade RetroAchievements columns (hardcore), Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
+| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Upgrade RetroAchievements columns (hardcore), Import RetroAchievements Want to Play list, Add HACK column (RetroAchievements), Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
 | **Settings → Accounts** | Steam API key and ID, RetroAchievements username and key, Discord webhook. |
 | **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked. |
 | **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. Turning **Link game names** off removes the Steam links the script added and resets those names to plain text (links you added yourself are left alone). |
@@ -193,7 +193,7 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 3. Copy your **Web API Key**. Don't use the Connect key. Your **username** is the name shown on your profile.
 4. In your Google Sheet, run **Steam Tracker → Settings → Accounts → RetroAchievements username & key**.
 5. Enter your username, then paste the key. The script checks them against RetroAchievements. If they are wrong it says so and saves nothing.
-6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED, LAST PLAYED, DATE COMPLETED, LAST UPDATED, and turns RetroAchievements on.
+6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers HACK, GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED, LAST PLAYED, DATE COMPLETED, LAST UPDATED, and turns RetroAchievements on.
 7. Type game names under GAME LIST, then run **Update now**.
 
 You can also run **Tools → Set up RetroAchievements tab** at any time, before or after connecting. It only works on a blank tab, so it can't overwrite anything. Turn the tracking on or off and rename the tab under **Settings → Sheets & columns**.
@@ -203,12 +203,20 @@ You can also run **Tools → Set up RetroAchievements tab** at any time, before 
 - **Games you have played:** matched by title from your RetroAchievements history, with your real collected and hardcore counts.
 - **Games you haven't played yet (or that aren't in your history):** the script searches the RetroAchievements game lists, takes the game's **total achievements**, and shows **collected and hardcore as 0**. CONSOLE is filled in for you. As soon as you earn something in it, your real numbers replace the zeros.
 - **Fill in CONSOLE** (for example `SNES`, `GBA`, `Game Boy Advance`, `PlayStation`) to search just that console's list. This is quicker, and it's how you pick the right one when a title exists on several consoles. Without a console the script searches every console, which can take a few updates the first time. Game lists are cached for 6 hours and found games are remembered, so it doesn't repeat the work.
-- **Titles that can't be matched** get a note on the game name cell (hover to read it): not found, found on several consoles, or a close match to verify. Hacks, homebrew and subsets are skipped.
+- **Titles that can't be matched** get a note on the game name cell (hover to read it): not found, found on several consoles, or a close match to verify. Homebrew, demos and subsets are skipped. ROM hacks are handled through the HACK column (see below).
 - Games with no achievements on RetroAchievements aren't in the game lists, so they show as not found.
 
 Columns are aligned for readability: COLLECTED ACHIES, TOTAL ACHIES, COMPLETED, HOURS PLAYED, LAST PLAYED and DATE COMPLETED are centered (on the RetroAchievements tab also COLLECTED HC ACHIES, TOTAL HC ACHIES and HC COMPLETED); APPID, AMOUNT DONE and HC AMOUNT DONE are right-aligned. The script applies this on every update to the rows in use.
 
 **Normal and hardcore columns.** The RetroAchievements tab has two sets of achievement columns: COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS and COMPLETED for all achievements, then COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS and HC COMPLETED for hardcore. Both sets are in the totals row (and in the TOTALS row under the header, if you added it). TOTAL HC ACHIES follows the **TOTAL ACHIES** cell update rule, and COLLECTED HC ACHIES has its own rule.
+
+**ROM hacks.** RetroAchievements lists hacks with a `~Hack~` tag in the title. The RetroAchievements tab has a **HACK** checkbox column between BACKLOG STATUS and GAME LIST (BACKLOG STATUS, HACK, GAME LIST).
+- The script **ticks it for you** when a game is a hack: a title that starts with `~Hack~`, or a game matched to a hack in your history or on the site.
+- For a hack you haven't played yet, either type the full title with the tag (`~Hack~ Super Mario World: Hard Mode`) or tick the box yourself. A row marked as a hack is matched against the hack list with the tags ignored, so the plain name works too, and its total achievements are pulled with collected and hardcore at 0. Rows that are not marked as hacks never match hacks, so a hack can't be mistaken for the base game.
+- Games imported from your Want to Play list that are hacks come in with the box already ticked.
+- **Existing tab:** run **Tools → Add HACK column (RetroAchievements)**. It adds the checkbox column directly left of GAME LIST (right of BACKLOG STATUS if you have it). If you add BACKLOG STATUS later, it is placed left of HACK.
+
+**Want to Play list.** **Tools → Import RetroAchievements Want to Play list** adds every game on your RetroAchievements Want to Play list that isn't on the tab yet, with its console and game ID, then runs an update so each one gets its total achievements (collected and hardcore show 0). Games already on the tab (matched by title and console) and games with no achievements are skipped, and rows are added above the totals row when the list is full. To keep it in sync automatically, turn on **Settings → Sheets & columns → Auto-add Want to Play games (RetroAchievements)** (off by default); every update then adds new games from the list. Note that a game you delete from the tab will come back on the next update while this is on, unless you also remove it from your Want to Play list. RetroAchievements only shares this list with you, so it works with your own username and key.
 
 **Already have a RetroAchievements tab?** Open **Tools → Upgrade RetroAchievements columns (hardcore)** once. It inserts the five hardcore columns after COMPLETED, moves the numbers from your old HARDCORE ACHIES column into COLLECTED HC ACHIES (then removes the old column), fills in the formulas down the list, adds the totals, and runs an update. A tab that still has the old single HARDCORE ACHIES column keeps working until you upgrade it.
 
