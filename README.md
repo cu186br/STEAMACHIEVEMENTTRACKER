@@ -1,4 +1,4 @@
-# Steam Tracker for Google Sheets
+# Achievement Tracker for Google Sheets
 
 A Google Apps Script that lives inside your Google Sheet and keeps a list of your games up to date: achievements, hours played, last played, completion date, genre and more. It tracks Steam, and optionally RetroAchievements on a second tab. It only tracks the games **you list on the sheet**, not your whole library, and it can post updates to a Discord channel.
 
@@ -44,16 +44,16 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 1. Open your Google Sheet (or create a blank one).
 2. Go to **Extensions → Apps Script**.
 3. Delete everything in the editor, then paste in the contents of `SteamTracker.gs`.
-4. Click **Save**, then go back to the sheet and **reload the page**. A **Steam Tracker** menu appears after a few seconds.
+4. Click **Save**, then go back to the sheet and **reload the page**. A **Achievement Tracker** menu appears after a few seconds.
 
 ### 3. Enter your Steam details
 
-1. Open **Steam Tracker → Settings → Accounts → Steam API key & Steam ID** and enter your key, then your Steam ID.
+1. Open **Achievement Tracker → Settings → Accounts → Steam API key & Steam ID** and enter your key, then your Steam ID.
 2. Google asks you to authorize the script the first time you run something. Click **Review permissions**, choose your account, and if you see *"Google hasn't verified this app"* click **Advanced → Go to … (unsafe) → Allow**. The warning appears because you are running your own script, which hasn't been through Google's review.
 
 ### 4. Set up the sheet
 
-**Blank sheet (easiest):** run **Steam Tracker → Update now** (or **Tools → Set up blank sheet**). The script creates all the headers, formulas, colours and a totals row. Then type your game names under **GAME LIST** and run **Update now** again.
+**Blank sheet (easiest):** run **Achievement Tracker → Update now** (or **Sheet setup → Set up blank sheet**). The script creates all the headers, formulas, colours and a totals row. Then type your game names under **GAME LIST** and run **Update now** again.
 
 **Existing sheet:** make sure row 1 has these headers (the order and extra columns don't matter, and capital letters are ignored):
 
@@ -66,7 +66,7 @@ No server, hosting or install is needed. Everything runs for free inside Google 
 | `HOURS PLAYED` | script | Required. |
 | `LAST PLAYED` | script | Required. |
 | `LAST UPDATED` | script | Required. |
-| `DATE COMPLETED` | script | Optional. **Tools → Add DATE COMPLETED column** adds it before `LAST UPDATED`. |
+| `DATE COMPLETED` | script | Optional. **Sheet setup → Add DATE COMPLETED column** adds it before `LAST UPDATED`. |
 | `AMOUNT DONE`, `PROGRESS`, `COMPLETED` | formulas | Optional. Copied down to new game rows for you. |
 | `GENRE` | script | Optional. Add a column with this header to turn it on. |
 | `STATUS` | script | Optional. Added automatically to the empty column right after `LAST UPDATED`. |
@@ -76,12 +76,12 @@ Any other columns on the sheet are left alone.
 
 ### 5. Turn on auto-update
 
-Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to every 15 minutes, and you can change that in the same menu.
+Run **Achievement Tracker → Settings → Updates → Auto-update**. It defaults to every 15 minutes, and you can change that in the same menu.
 
 ### 6. Optional: Discord posts
 
 1. In Discord, go to **Server Settings → Integrations → Webhooks → New Webhook**, pick a channel, and **Copy Webhook URL**. Links from Discord Canary, PTB and other clients work too.
-2. In the sheet, run **Steam Tracker → Settings → Accounts → Discord webhook** and paste it. A test message appears in the channel.
+2. In the sheet, run **Achievement Tracker → Settings → Accounts → Discord webhook** and paste it. A test message appears in the channel.
 
 ## The menu
 
@@ -89,10 +89,13 @@ Run **Steam Tracker → Settings → Updates → Auto-update**. It defaults to e
 |---|---|
 | **Update now**, **Update + post last played to Discord**, **Post weekly summary now (preview)** | The everyday actions. |
 | **Sort the list** | The sort options and the sort range. |
-| **Tools** | Diagnose selected game, Send test 100% post to Discord, Add game rows, Import library games with achievements, Add totals row under the header, Upgrade RetroAchievements columns (hardcore), Import RetroAchievements Want to Play list, Add HACK column (RetroAchievements), Add BACKLOG STATUS column, Add DATE COMPLETED column, Set up blank sheet, Set up RetroAchievements tab. |
+| **Add games** | Import Steam library games with achievements, Import RetroAchievements Want to Play list, Add game rows. |
+| **Sheet setup** | Set up blank sheet, Set up RetroAchievements tab, Add BACKLOG STATUS / DATE COMPLETED / HACK columns, Add totals row under the header, Upgrade RetroAchievements columns (hardcore). |
+| **Tools** | Diagnose selected game, Send test 100% post to Discord. |
 | **Settings → Accounts** | Steam API key and ID, RetroAchievements username and key, Discord webhook. |
-| **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked. |
-| **Settings → Sheets & columns** | Tab names, RetroAchievements on/off, rows on a new sheet, store links, genre and status columns. Turning **Link game names** off removes the Steam links the script added and resets those names to plain text (links you added yourself are left alone). |
+| **Settings → Updates** | Auto-update on/off and frequency (1, 5, 10, 15 or 30 min), how long a recently played game keeps being re-checked, and how often family-shared and free-to-play games are re-checked (default every 60 minutes; Steam reports no playtime for them, so they run on a timer). |
+| **Settings → Sheets & columns** | Steam tab name, rows on a new sheet, store links, genre and status columns. Turning **Link game names** off removes the Steam links the script added and resets those names to plain text (links you added yourself are left alone). |
+| **Settings → RetroAchievements** | Track RetroAchievements on/off, tab name, auto-add Want to Play games. |
 | **Settings → Backlog status** | The IDLE cutoff and the status colours. |
 | **Settings → Cell update rules** | Overwrite or keep your edits, per column. |
 | **Settings → Discord** | Last-played, 100% and weekly posts, and the weekly day and hour. |
@@ -106,13 +109,13 @@ The `DATE COMPLETED` column holds the date of the **last achievement you earned*
 
 - **Steam:** the date comes from the unlock times Steam already reports for your earned achievements. A finished game with no date is fetched straight away, so adding the column fills in your existing 100% games on the next update. If Steam has no unlock times for a game, the cell stays blank.
 - **RetroAchievements:** the date of your most recent earned achievement in that game (hardcore or softcore).
-- **Add it:** **Tools → Add DATE COMPLETED column** inserts it between `LAST PLAYED` and `LAST UPDATED` on the tab you are looking at. New blank sheets include it.
+- **Add it:** **Sheet setup → Add DATE COMPLETED column** inserts it between `LAST PLAYED` and `LAST UPDATED` on the tab you are looking at. New blank sheets include it.
 - **Sort:** **Sort the list → Date completed (newest first / oldest first)**. Games without a date go last.
 - **Rule:** under **Cell update rules** you can set `DATE COMPLETED` to keep your edits.
 
 ## Backlog status column
 
-Run **Tools → Add BACKLOG STATUS column** to add it to the tab you are looking at (Steam or RetroAchievements). It inserts a `BACKLOG STATUS` column directly left of GAME LIST and fills it. Everything to its right shifts over by one, and formulas, links and lists move with it. Running it again just refreshes the column. You can also add it by hand: make a column anywhere on the sheet with the header `BACKLOG STATUS` (`PLAY STATUS` or `BACKLOG` also work).
+Run **Sheet setup → Add BACKLOG STATUS column** to add it to the tab you are looking at (Steam or RetroAchievements). It inserts a `BACKLOG STATUS` column directly left of GAME LIST and fills it. Everything to its right shifts over by one, and formulas, links and lists move with it. Running it again just refreshes the column. You can also add it by hand: make a column anywhere on the sheet with the header `BACKLOG STATUS` (`PLAY STATUS` or `BACKLOG` also work).
 
 On every update the script writes text into the column:
 
@@ -150,7 +153,7 @@ The script never removes chips, dropdowns or colours you add yourself, and **Add
 
 ## Sorting the list
 
-**Steam Tracker → Sort the list** offers:
+**Achievement Tracker → Sort the list** offers:
 
 - A to Z and Z to A.
 - Completion % (highest or lowest first), hours played (most first), last played (newest first), genre.
@@ -161,7 +164,7 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 
 ## Totals row under the header
 
-**Tools → Add totals row under the header** adds a bold `TOTALS` row directly below the header that mirrors the totals row at the bottom of the list, and freezes it so the totals stay in view while you scroll. Do it once per tab (run it while looking at the tab you want; it needs the totals row at the bottom to already exist, which blank-sheet setup creates).
+**Sheet setup → Add totals row under the header** adds a bold `TOTALS` row directly below the header that mirrors the totals row at the bottom of the list, and freezes it so the totals stay in view while you scroll. Do it once per tab (run it while looking at the tab you want; it needs the totals row at the bottom to already exist, which blank-sheet setup creates).
 
 - Everything below the header moves down by one row, so your games start on **row 3**. The script finds the first game row by itself, so updating, sorting, importing, adding rows, the BACKLOG STATUS column and Discord posts all keep working. Formulas you wrote yourself that point at specific rows are adjusted by Google Sheets as usual.
 - Don't type games into the `TOTALS` row, and leave the label as `TOTALS` so the script can recognise it.
@@ -169,7 +172,7 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 
 ## Importing your library
 
-**Tools → Import library games with achievements…** adds every game in your Steam library that **has achievements** and is not on the sheet yet. Games without achievements are ignored. It is a manual button and never runs by itself, not even when a sheet is first set up.
+**Add games → Import Steam library games with achievements…** adds every game in your Steam library that **has achievements** and is not on the sheet yet. Games without achievements are ignored. It is a manual button and never runs by itself, not even when a sheet is first set up.
 
 - **It can take a long time** on a big library, because Steam is asked about every game. A confirmation warns you first. If it runs out of time it saves its progress, so run it again to carry on.
 - New games are added below the existing list in A to Z order with their AppID, and the update that follows fills in hours, achievements and genres. They are not announced on Discord.
@@ -178,7 +181,7 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 
 ## Adding more game rows
 
-**Tools → Add game rows…** asks how many rows to add (1 to 2000). New rows go in above the totals row, formulas, formatting and dropdowns are copied down, and the totals ranges are extended. **Settings → Sheets & columns → Game rows on a new sheet** sets how many rows a blank sheet starts with (default 250).
+**Add games → Add game rows…** asks how many rows to add (1 to 2000). New rows go in above the totals row, formulas, formatting and dropdowns are copied down, and the totals ranges are extended. **Settings → Sheets & columns → Game rows on a new sheet** sets how many rows a blank sheet starts with (default 250).
 
 ## Cell update rules
 
@@ -191,12 +194,12 @@ Sorting only reorders the game table, so lists next to it and the totals row are
 1. Sign in at <https://retroachievements.org> (create a free account first if you don't have one).
 2. Click your username in the top right, open **Settings**, and scroll to the **Keys** section.
 3. Copy your **Web API Key**. Don't use the Connect key. Your **username** is the name shown on your profile.
-4. In your Google Sheet, run **Steam Tracker → Settings → Accounts → RetroAchievements username & key**.
+4. In your Google Sheet, run **Achievement Tracker → Settings → Accounts → RetroAchievements username & key**.
 5. Enter your username, then paste the key. The script checks them against RetroAchievements. If they are wrong it says so and saves nothing.
 6. When it succeeds, it creates a second tab (default name `RetroAchievements`) with the headers HACK, GAME LIST, CONSOLE, GENRE, COLLECTED ACHIES, TOTAL ACHIES, AMOUNT DONE, PROGRESS, COMPLETED, COLLECTED HC ACHIES, TOTAL HC ACHIES, HC AMOUNT DONE, HC PROGRESS, HC COMPLETED, LAST PLAYED, DATE COMPLETED, LAST UPDATED, and turns RetroAchievements on.
 7. Type game names under GAME LIST, then run **Update now**.
 
-You can also run **Tools → Set up RetroAchievements tab** at any time, before or after connecting. It only works on a blank tab, so it can't overwrite anything. Turn the tracking on or off and rename the tab under **Settings → Sheets & columns**.
+You can also run **Sheet setup → Set up RetroAchievements tab** at any time, before or after connecting. It only works on a blank tab, so it can't overwrite anything. Turn the tracking on or off and rename the tab under **Settings → RetroAchievements**.
 
 ### How games are found
 
@@ -214,11 +217,11 @@ Columns are aligned for readability: COLLECTED ACHIES, TOTAL ACHIES, COMPLETED, 
 - The script **ticks it for you** when a game is a hack: a title that starts with `~Hack~`, or a game matched to a hack in your history or on the site.
 - For a hack you haven't played yet, either type the full title with the tag (`~Hack~ Super Mario World: Hard Mode`) or tick the box yourself. A row marked as a hack is matched against the hack list with the tags ignored, so the plain name works too, and its total achievements are pulled with collected and hardcore at 0. Rows that are not marked as hacks never match hacks, so a hack can't be mistaken for the base game.
 - Games imported from your Want to Play list that are hacks come in with the box already ticked.
-- **Existing tab:** run **Tools → Add HACK column (RetroAchievements)**. It adds the checkbox column directly left of GAME LIST (right of BACKLOG STATUS if you have it). If you add BACKLOG STATUS later, it is placed left of HACK.
+- **Existing tab:** run **Sheet setup → Add HACK column (RetroAchievements)**. It adds the checkbox column directly left of GAME LIST (right of BACKLOG STATUS if you have it). If you add BACKLOG STATUS later, it is placed left of HACK.
 
-**Want to Play list.** **Tools → Import RetroAchievements Want to Play list** adds every game on your RetroAchievements Want to Play list that isn't on the tab yet, with its console and game ID, then runs an update so each one gets its total achievements (collected and hardcore show 0). Games already on the tab (matched by title and console) and games with no achievements are skipped, and rows are added above the totals row when the list is full. To keep it in sync automatically, turn on **Settings → Sheets & columns → Auto-add Want to Play games (RetroAchievements)** (off by default); every update then adds new games from the list. Note that a game you delete from the tab will come back on the next update while this is on, unless you also remove it from your Want to Play list. RetroAchievements only shares this list with you, so it works with your own username and key.
+**Want to Play list.** **Add games → Import RetroAchievements Want to Play list** adds every game on your RetroAchievements Want to Play list that isn't on the tab yet, with its console and game ID, then runs an update so each one gets its total achievements (collected and hardcore show 0). Games already on the tab (matched by title and console) and games with no achievements are skipped, and rows are added above the totals row when the list is full. To keep it in sync automatically, turn on **Settings → RetroAchievements → Auto-add Want to Play games** (off by default); every update then adds new games from the list. Note that a game you delete from the tab will come back on the next update while this is on, unless you also remove it from your Want to Play list. RetroAchievements only shares this list with you, so it works with your own username and key.
 
-**Already have a RetroAchievements tab?** Open **Tools → Upgrade RetroAchievements columns (hardcore)** once. It inserts the five hardcore columns after COMPLETED, moves the numbers from your old HARDCORE ACHIES column into COLLECTED HC ACHIES (then removes the old column), fills in the formulas down the list, adds the totals, and runs an update. A tab that still has the old single HARDCORE ACHIES column keeps working until you upgrade it.
+**Already have a RetroAchievements tab?** Open **Sheet setup → Upgrade RetroAchievements columns (hardcore)** once. It inserts the five hardcore columns after COMPLETED, moves the numbers from your old HARDCORE ACHIES column into COLLECTED HC ACHIES (then removes the old column), fills in the formulas down the list, adds the totals, and runs an update. A tab that still has the old single HARDCORE ACHIES column keeps working until you upgrade it.
 
 The RetroAchievements tab carries over Discord posts (last played, 100% completion which says *Mastered in hardcore* when it applies), the weekly summary, sorting, update rules and totals. It has no store links, AppID, hours or STATUS column.
 
@@ -244,7 +247,7 @@ The RetroAchievements tab carries over Discord posts (last played, 100% completi
 
 ## Troubleshooting
 
-**First step for any single game:** click a cell in its row and run **Steam Tracker → Tools → Diagnose selected game**.
+**First step for any single game:** click a cell in its row and run **Achievement Tracker → Tools → Diagnose selected game**.
 
 The STATUS column holds a short label. **Hover over the cell** for a note explaining it.
 
